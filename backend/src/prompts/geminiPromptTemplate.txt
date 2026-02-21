@@ -1,0 +1,21 @@
+You are generating a structured script for a short slideshow video.
+
+Topic: {{topic}}
+
+Rules:
+- Return JSON only.
+- Total script under 400 words.
+- 5 to 8 sections.
+- Keywords must be visually descriptive, avoid abstract terms.
+
+Output JSON schema:
+{
+  "title": "",
+  "sections": [
+    {
+      "heading": "",
+      "script": "",
+      "keywords": ["visual keyword 1", "visual keyword 2"]
+    }
+  ]
+}
