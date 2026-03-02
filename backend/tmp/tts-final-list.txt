@@ -1,6 +1,0 @@
-file 'C:/Users/biswa/Downloads/ai-video-generation/backend/tmp/section-0.wav'
-file 'C:/Users/biswa/Downloads/ai-video-generation/backend/tmp/section-1.wav'
-file 'C:/Users/biswa/Downloads/ai-video-generation/backend/tmp/section-2.wav'
-file 'C:/Users/biswa/Downloads/ai-video-generation/backend/tmp/section-3.wav'
-file 'C:/Users/biswa/Downloads/ai-video-generation/backend/tmp/section-4.wav'
-file 'C:/Users/biswa/Downloads/ai-video-generation/backend/tmp/section-5.wav'
