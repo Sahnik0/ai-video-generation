@@ -2,12 +2,11 @@ const path = require("path");
 const Video = require("../models/Video");
 const { hashTopic } = require("../utils/hash");
 const { normalizeTopic, trimSectionsToWordLimit } = require("../utils/text");
-const { fileExists, ensureDir, downloadFile } = require("../utils/file");
+const { fileExists, ensureDir } = require("../utils/file");
 const { generateScript } = require("../services/geminiService");
-const { generateKeywordsForScript } = require("../services/keywordGeneratorService");
-const { searchImagesForKeywords } = require("../services/photoApiService");
-const { generateSpeech } = require("../services/ttsService");
-const { renderVideo } = require("../services/ffmpegService");
+const { orchestrate, tweakScript, buildSyncPlan } = require("../services/aiAgentService");
+const { generatePerImageAudio, generateSectionAudio } = require("../services/ttsService");
+const { renderSyncedVideo } = require("../services/ffmpegService");
 
 const storageRoot = path.resolve(__dirname, "../../storage");
 const audioDir = path.join(storageRoot, "audio");
@@ -21,6 +20,11 @@ const buildVideoUrl = (req, filePath) => {
   return `${baseUrl}/videos/${fileName}`;
 };
 
+const VALID_LANGUAGES = [
+  "en-IN", "hi-IN", "bn-IN", "te-IN", "ta-IN",
+  "mr-IN", "gu-IN", "kn-IN", "ml-IN", "od-IN", "pa-IN"
+];
+
 const generateVideo = async (req, res) => {
   try {
     const topic = req.body.topic;
@@ -28,9 +32,12 @@ const generateVideo = async (req, res) => {
       return res.status(400).json({ error: "Topic is required" });
     }
 
+    const language = VALID_LANGUAGES.includes(req.body.language) ? req.body.language : "en-IN";
+
     const normalized = normalizeTopic(topic);
-    const topicHash = hashTopic(normalized);
-    console.log(`[video] start topicHash=${topicHash}`);
+    // Include language in hash so same topic in different languages gets different cache entries
+    const topicHash = hashTopic(`${normalized}::${language}`);
+    console.log(`[video] start topicHash=${topicHash} language=${language}`);
 
     const cached = await Video.findOne({ topicHash, status: "completed" });
     if (cached && cached.videoPath && (await fileExists(cached.videoPath))) {
@@ -50,8 +57,8 @@ const generateVideo = async (req, res) => {
       createdAt: new Date()
     });
 
-    console.log(`[video] requesting gemini`);
-    const aiResponse = await generateScript(topic);
+    console.log(`[video] requesting gemini (language=${language})`);
+    const aiResponse = await generateScript(topic, language);
     if (!aiResponse || !Array.isArray(aiResponse.sections)) {
       throw new Error("Invalid Gemini response");
     }
@@ -62,7 +69,7 @@ const generateVideo = async (req, res) => {
       keywords: Array.isArray(section.keywords) ? section.keywords.map(String) : []
     }));
 
-    const sections = trimSectionsToWordLimit(normalizedSections, 400);
+    const sections = trimSectionsToWordLimit(normalizedSections, 300);
     console.log(`[video] sections=${sections.length}`);
 
     if (sections.length < 5 || sections.length > 8) {
@@ -72,93 +79,81 @@ const generateVideo = async (req, res) => {
     const topicImagesDir = path.join(imageDir, topicHash);
     await ensureDir(topicImagesDir);
 
-    console.log("[video] generating keywords from script");
-    const allKeywords = await generateKeywordsForScript(sections);
-    console.log(`[video] generated ${allKeywords.length} keywords:`, allKeywords);
+    // ─── AI Agent: orchestrate image selection ──────────────────────
+    console.log("[video] handing off to AI agent for image orchestration");
+    const { sectionImages, sectionKeywords } = await orchestrate(sections, topicImagesDir);
 
-    if (allKeywords.length === 0) {
-      throw new Error("Failed to generate keywords from script");
+    if (sectionImages.length === 0) {
+      throw new Error("AI agent could not fetch images for any sections");
     }
 
-    console.log("[video] fetching images for all keywords");
-    const searchResponse = await searchImagesForKeywords(allKeywords, 1);
-    console.log(
-      `[video] image fetch complete: ${searchResponse.successful}/${searchResponse.total_keywords} keywords succeeded`
-    );
+    // ─── Tweak script to align with fetched images ───────────────────
+    console.log("[video] tweaking script to match fetched images");
+    const tweakedSections = await tweakScript(sections, sectionImages, sectionKeywords);
 
-    const imagePaths = [];
-    for (let resultIdx = 0; resultIdx < searchResponse.results.length; resultIdx += 1) {
-      const result = searchResponse.results[resultIdx];
-      if (result.success && result.result && Array.isArray(result.result.images)) {
-        let downloaded = false;
-        
-        // Try multiple images from result if available
-        for (let imgIdx = 0; imgIdx < Math.min(result.result.images.length, 3); imgIdx += 1) {
-          const imageData = result.result.images[imgIdx];
-          const imageUrl = imageData?.image || imageData;
-          
-          if (imageUrl && typeof imageUrl === 'string') {
-            // Skip SVG and other incompatible formats
-            if (imageUrl.toLowerCase().includes('.svg') || imageUrl.toLowerCase().endsWith('.svg')) {
-              console.warn(`[video] skipping SVG image for "${result.keyword}"`);
-              continue;
-            }
-            
-            const imagePath = path.join(topicImagesDir, `image-${resultIdx}.jpg`);
-            try {
-              await downloadFile(imageUrl, imagePath);
-              
-              // Verify file size (skip if too small/empty)
-              const stats = await require('fs/promises').stat(imagePath);
-              if (stats.size < 1000) {
-                console.warn(`[video] downloaded file too small for "${result.keyword}", trying next`);
-                await require('fs/promises').unlink(imagePath).catch(() => {});
-                continue;
-              }
-              
-              imagePaths.push(imagePath);
-              console.log(`[video] downloaded image for keyword "${result.keyword}"`);
-              downloaded = true;
-              break; // Success, move to next keyword
-            } catch (downloadError) {
-              console.warn(`[video] attempt ${imgIdx + 1} failed for "${result.keyword}": ${downloadError.message}`);
-            }
-          }
-        }
-        
-        if (!downloaded) {
-          console.warn(`[video] all download attempts failed for keyword "${result.keyword}"`);
-        }
-        
-        // Random delay between 300-800ms to appear more human
-        const delay = 300 + Math.floor(Math.random() * 500);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      } else {
-        console.warn(`[video] no images found for keyword "${result.keyword}"`);
-      }
-    }
-
-    if (imagePaths.length === 0) {
-      throw new Error("Failed to fetch images for any sections");
-    }
-
-    const scriptText = sections.map((section) => section.script).join(" ");
-
+    // ─── Per-image TTS: one audio per image slot for exact sync timing ───
+    // Falls back to per-section TTS if too many per-image calls fail (rate limiting)
     await ensureDir(audioDir);
     await ensureDir(videoDir);
 
     const audioPath = path.join(audioDir, `${topicHash}.mp3`);
     const videoPath = path.join(videoDir, `${topicHash}.mp4`);
 
-    console.log("[video] generating audio");
-    await generateSpeech(scriptText, audioPath, tempDir);
-    console.log("[video] rendering video");
-    await renderVideo({ imagePaths, audioPath, outputPath: videoPath });
+    let perImageAudios = null;
+    let usedSectionFallback = false;
+
+    try {
+      console.log(`[video] generating per-image audio (language=${language})`);
+      const result = await generatePerImageAudio(
+        tweakedSections,
+        sectionImages,
+        audioPath,
+        tempDir,
+        language
+      );
+      perImageAudios = result.perImageAudios;
+    } catch (perImgErr) {
+      console.warn(`[video] per-image TTS failed: ${perImgErr.message}`);
+      console.log("[video] falling back to per-section TTS");
+      usedSectionFallback = true;
+
+      const { sectionAudios } = await generateSectionAudio(tweakedSections, audioPath, tempDir, language);
+
+      // Convert section-level durations to per-image durations (split equally within each section)
+      perImageAudios = [];
+      const imageCountMap = {};
+      for (const si of sectionImages) {
+        imageCountMap[si.sectionIndex] = si.imagePaths.length;
+      }
+      for (const sa of sectionAudios) {
+        const imgCount = imageCountMap[sa.sectionIndex] || 1;
+        const perImgDur = sa.duration / imgCount;
+        for (let imgIdx = 0; imgIdx < imgCount; imgIdx += 1) {
+          perImageAudios.push({
+            sectionIndex: sa.sectionIndex,
+            imageIndex: imgIdx,
+            duration: perImgDur
+          });
+        }
+      }
+      console.log(`[video] section fallback: ${perImageAudios.length} per-image durations from ${sectionAudios.length} sections`);
+    }
+
+    // ─── Build sync plan: each image knows its exact TTS duration ────
+    const syncPlan = buildSyncPlan(tweakedSections, sectionImages, perImageAudios);
+
+    if (syncPlan.length === 0) {
+      throw new Error("No sections with both image and audio — cannot render video");
+    }
+
+    // ─── Render video with synced timing ────────────────────────────
+    console.log("[video] rendering synced video");
+    await renderSyncedVideo({ syncPlan, audioPath, outputPath: videoPath });
 
     record.title = aiResponse.title;
-    record.script = scriptText;
+    record.script = tweakedSections.map((s) => s.script).join(" ");
     record.sections = sections;
-    record.imagePathsCount = imagePaths.length;
+    record.imagePathsCount = syncPlan.length;
     record.audioPath = audioPath;
     record.videoPath = videoPath;
     record.status = "completed";
@@ -188,6 +183,7 @@ const listVideos = async (req, res) => {
     title: video.title,
     topic: video.topic,
     createdAt: video.createdAt,
+    mode: video.mode || "generic",
     videoUrl: video.videoPath ? buildVideoUrl(req, video.videoPath) : null
   }));
   return res.json({ items });

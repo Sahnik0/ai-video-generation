@@ -13,7 +13,8 @@ const requireEnv = (key) => {
 const env = {
   port: process.env.PORT || 4000,
   mongoUri: requireEnv("MONGODB_URI"),
-  geminiApiKey: requireEnv("GEMINI_API_KEY")
+  geminiApiKey: requireEnv("GEMINI_API_KEY"),
+  sarvamApiKey: requireEnv("SARVAM_API_KEY")
 };
 
 module.exports = { env };

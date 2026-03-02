@@ -18,7 +18,9 @@ Return ONLY a JSON object with this exact structure (no markdown, no extra text)
 }
 
 Requirements:
-- Keywords should be concrete, visual, and searchable
+- ALL keywords MUST be in ENGLISH only, regardless of what language the script is written in
+- Translate concepts from the script into English visual search terms
+- Keywords should be concrete, visual, and searchable on image databases
 - Avoid abstract or overly generic terms
 - Prioritize main topics and concepts mentioned
 - Each keyword should be 1-3 words

@@ -1,0 +1,15 @@
+{
+  "name": "remotion-scenes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Remotion animation project for AI-generated scene rendering",
+  "scripts": {
+    "studio": "npx remotion studio"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.0",
+    "d3": "^7.9.0"
+  }
+}

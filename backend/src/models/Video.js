@@ -28,6 +28,9 @@ const VideoSchema = new mongoose.Schema({
   audioPath: { type: String },
   videoPath: { type: String },
   status: { type: String, required: true },
+  language: { type: String, default: "en-IN" },
+  mode: { type: String, default: "generic" }, // "generic" | "detailed"
+  generatedAt: { type: Date },
   createdAt: { type: Date, default: Date.now }
 });
 

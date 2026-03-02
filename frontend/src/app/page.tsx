@@ -20,6 +20,7 @@ type VideoItem = {
   topic: string;
   createdAt: string;
   videoUrl: string | null;
+  mode?: "generic" | "detailed";
 };
 
 type NotificationType = {
@@ -28,8 +29,24 @@ type NotificationType = {
   type: "success" | "error" | "info" | "warning";
 };
 
+const SUPPORTED_LANGUAGES = [
+  { code: "en-IN", label: "English", flag: "🇬🇧" },
+  { code: "hi-IN", label: "Hindi / हिन्दी", flag: "🇮🇳" },
+  { code: "bn-IN", label: "Bengali / বাংলা", flag: "🇧🇩" },
+  { code: "te-IN", label: "Telugu / తెలుగు", flag: "🇮🇳" },
+  { code: "ta-IN", label: "Tamil / தமிழ்", flag: "🇮🇳" },
+  { code: "mr-IN", label: "Marathi / मराठी", flag: "🇮🇳" },
+  { code: "gu-IN", label: "Gujarati / ગુજરાતી", flag: "🇮🇳" },
+  { code: "kn-IN", label: "Kannada / ಕನ್ನಡ", flag: "🇮🇳" },
+  { code: "ml-IN", label: "Malayalam / മലയാളം", flag: "🇮🇳" },
+  { code: "od-IN", label: "Odia / ଓଡ଼ିଆ", flag: "🇮🇳" },
+  { code: "pa-IN", label: "Punjabi / ਪੰਜਾਬੀ", flag: "🇮🇳" },
+];
+
 export default function Home() {
   const [topic, setTopic] = useState("");
+  const [selectedLanguage, setSelectedLanguage] = useState("en-IN");
+  const [selectedMode, setSelectedMode] = useState<"generic" | "detailed">("generic");
   const [isLoading, setIsLoading] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
   const [currentVideo, setCurrentVideo] = useState<VideoItem | null>(null);
@@ -75,12 +92,19 @@ export default function Home() {
     let stepIndex = 0;
     setActiveStep(stepIndex);
 
-    const stepMessages = [
-      "Crafting your story with Gemini AI...",
-      "Finding the perfect visuals on Unsplash...",
-      "Generating natural sounding voice...",
-      "Seamlessly stitching everything together..."
-    ];
+    const stepMessages = selectedMode === "detailed"
+      ? [
+          "Crafting your story with Gemini AI...",
+          "Generating voice narration per section...",
+          "Writing custom animation code for each scene...",
+          "Rendering with Remotion (5-10 min for detailed mode)...",
+        ]
+      : [
+          "Crafting your story with Gemini AI...",
+          "Finding the perfect visuals on Unsplash...",
+          "Generating natural sounding voice...",
+          "Seamlessly stitching everything together...",
+        ];
 
     setProgressMessage(stepMessages[stepIndex]);
 
@@ -109,10 +133,14 @@ export default function Home() {
     setProgressMessage("Initializing video creation...");
 
     try {
-      const response = await fetch(`${apiBase}/api/videos/generate`, {
+      const endpoint = selectedMode === "detailed"
+        ? `${apiBase}/api/videos/generate-detailed`
+        : `${apiBase}/api/videos/generate`;
+
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ topic })
+        body: JSON.stringify({ topic, language: selectedLanguage })
       });
 
       const data = await response.json();
@@ -208,17 +236,61 @@ export default function Home() {
                 </div>
 
                 <div className="space-y-4">
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <div className="sm:col-span-2">
+                      <label htmlFor="topic" className="block text-sm font-medium text-steel mb-2">
+                        Video Topic
+                      </label>
+                      <textarea
+                        id="topic"
+                        className="brutal-input w-full min-h-[120px] p-4 resize-none"
+                        placeholder="Enter a topic like 'The impact of climate change on coral reefs' or 'How quantum computing works'"
+                        value={topic}
+                        onChange={(event) => setTopic(event.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="language" className="block text-sm font-medium text-steel mb-2">
+                        Narration Language
+                      </label>
+                      <select
+                        id="language"
+                        className="brutal-input w-full p-3 h-[120px] cursor-pointer"
+                        value={selectedLanguage}
+                        onChange={(e) => setSelectedLanguage(e.target.value)}
+                        size={5}
+                      >
+                        {SUPPORTED_LANGUAGES.map((lang) => (
+                          <option key={lang.code} value={lang.code}>
+                            {lang.flag} {lang.label}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-steel mt-1">
+                        Script &amp; voice in selected language
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Mode selector */}
                   <div>
-                    <label htmlFor="topic" className="block text-sm font-medium text-steel mb-2">
-                      Video Topic
+                    <label htmlFor="mode" className="block text-sm font-medium text-steel mb-2">
+                      Video Mode
                     </label>
-                    <textarea
-                      id="topic"
-                      className="brutal-input w-full min-h-[120px] p-4 resize-none"
-                      placeholder="Enter a topic like 'The impact of climate change on coral reefs' or 'How quantum computing works'"
-                      value={topic}
-                      onChange={(event) => setTopic(event.target.value)}
-                    />
+                    <select
+                      id="mode"
+                      className="brutal-input w-full p-3 cursor-pointer"
+                      value={selectedMode}
+                      onChange={(e) => setSelectedMode(e.target.value as "generic" | "detailed")}
+                    >
+                      <option value="generic">🎬 Generic — Fast photo slideshow with Ken Burns effects</option>
+                      <option value="detailed">🎨 Detailed — AI-animated content-specific visuals (5-10 min)</option>
+                    </select>
+                    {selectedMode === "detailed" && (
+                      <p className="text-xs text-steel mt-1 font-medium text-amber-600 dark:text-amber-400">
+                        ⚠️ Detailed mode generates custom animations with Remotion. Rendering takes 5–10 minutes.
+                      </p>
+                    )}
                   </div>
 
                   <div className="flex flex-wrap gap-2">
@@ -252,7 +324,7 @@ export default function Home() {
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
-                        <span>Generate My Video</span>
+                        <span>{selectedMode === "detailed" ? "Generate Detailed Video" : "Generate My Video"}</span>
                       </>
                     )}
                   </button>
@@ -355,32 +427,49 @@ export default function Home() {
             {/* Process Info */}
             <div className="brutal-card p-6">
               <h3 className="text-lg font-bold text-ink mb-4">How It Works</h3>
-              <ul className="space-y-3 text-sm">
-                <li className="flex items-start space-x-2">
-                  <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">
-                    1
-                  </div>
-                  <span className="text-steel">AI generates a structured script from your topic</span>
-                </li>
-                <li className="flex items-start space-x-2">
-                  <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">
-                    2
-                  </div>
-                  <span className="text-steel">Relevant images are fetched from Unsplash</span>
-                </li>
-                <li className="flex items-start space-x-2">
-                  <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">
-                    3
-                  </div>
-                  <span className="text-steel">Voice narration is created with Google TTS</span>
-                </li>
-                <li className="flex items-start space-x-2">
-                  <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">
-                    4
-                  </div>
-                  <span className="text-steel">Final video is rendered with FFmpeg</span>
-                </li>
-              </ul>
+              {selectedMode === "generic" ? (
+                <ul className="space-y-3 text-sm">
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">1</div>
+                    <span className="text-steel">AI generates a structured script from your topic</span>
+                  </li>
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">2</div>
+                    <span className="text-steel">Relevant images fetched &amp; animated with Ken Burns effects</span>
+                  </li>
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">3</div>
+                    <span className="text-steel">Voice narration created with Sarvam AI bulbul:v2</span>
+                  </li>
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">4</div>
+                    <span className="text-steel">Final video rendered with FFmpeg (~1-2 min)</span>
+                  </li>
+                </ul>
+              ) : (
+                <ul className="space-y-3 text-sm">
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">1</div>
+                    <span className="text-steel">AI generates a detailed script tailored for animation</span>
+                  </li>
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">2</div>
+                    <span className="text-steel">Sarvam AI generates voice narration per section</span>
+                  </li>
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">3</div>
+                    <span className="text-steel">Gemini writes custom Remotion animation code for each scene (molecular diagrams, charts, flowcharts, etc.)</span>
+                  </li>
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">4</div>
+                    <span className="text-steel">Remotion renders each animated scene via headless Chrome</span>
+                  </li>
+                  <li className="flex items-start space-x-2">
+                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">5</div>
+                    <span className="text-steel">FFmpeg concatenates all scenes into the final video (~5-10 min total)</span>
+                  </li>
+                </ul>
+              )}
             </div>
           </div>
         </div>
