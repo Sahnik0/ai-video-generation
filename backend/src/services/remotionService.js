@@ -12,16 +12,77 @@ const path = require("path");
 const fs = require("fs/promises");
 const { existsSync } = require("fs");
 const { bundle } = require("@remotion/bundler");
-const { renderMedia, selectComposition } = require("@remotion/renderer");
+const { renderMedia, selectComposition, renderStill } = require("@remotion/renderer");
 const ffmpegStatic = require("ffmpeg-static");
 const { spawn } = require("child_process");
 const esbuild = require("esbuild");
+const os = require("os");
 
 const REMOTION_DIR = path.resolve(__dirname, "../../remotion");
 const SCENES_DIR = path.join(REMOTION_DIR, "src", "scenes");
 const ROOT_FILE = path.join(REMOTION_DIR, "src", "Root.jsx");
 const ENTRY_POINT = path.join(REMOTION_DIR, "src", "index.jsx");
 const FPS = 30;
+
+// Gemini Flash for rescue scene generation (lightweight, fast)
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { env } = require("../config/env");
+
+// ─── Remotion API whitelist ────────────────────────────────────────────────────
+// Fast check to strip hallucinated import names that would crash at runtime.
+
+const REMOTION_VALID = new Set([
+  'AbsoluteFill', 'Audio', 'Composition', 'Easing', 'Folder', 'Freeze',
+  'IFrame', 'Img', 'Loop', 'OffthreadVideo', 'Sequence', 'Series', 'Still',
+  'Video', 'cancelRender', 'continueRender', 'delayRender', 'getInputProps',
+  'getRemotionEnvironment', 'getStaticFiles', 'interpolate', 'interpolateColors',
+  'measureSpring', 'prefetch', 'random', 'registerRoot', 'spring', 'staticFile',
+  'useBufferState', 'useCurrentFrame', 'useCurrentScale', 'useDelayRender',
+  'useRemotionEnvironment', 'useVideoConfig', 'watchStaticFile',
+]);
+
+const REMOTION_FIX = { 'interpolateColor': 'interpolateColors', 'interpolateColour': 'interpolateColors' };
+
+/**
+ * Quick sanitization of remotion imports — strips hallucinated names, fixes typos.
+ * This is a safety net for code that didn't go through detailedAgentService.repairCode().
+ */
+function sanitizeRemotionImports(code) {
+  // Fix hallucinated subpath imports: 'remotion/easing', 'remotion/spring' → 'remotion'
+  code = code.replace(/from\s+['"]remotion\/[a-zA-Z-]+['"]/g, "from 'remotion'");
+
+  return code.replace(
+    /^(import\s+\{)([^}]+)(\}\s+from\s+['"]remotion['"];?)$/m,
+    (full, pre, names, post) => {
+      const cleaned = names.split(',')
+        .map(n => n.trim())
+        .filter(Boolean)
+        .map(n => {
+          const base = n.split(/\s+as\s+/)[0].trim();
+          if (REMOTION_VALID.has(base)) return n;
+          if (base in REMOTION_FIX) {
+            // Fix body usages too
+            code = code.replace(new RegExp(`\\b${base}\\b`, 'g'), REMOTION_FIX[base]);
+            return REMOTION_FIX[base];
+          }
+          // Strip unknown — also neuter its usages in the body
+          code = code.replace(
+            new RegExp(`(const|let|var)\\s+(\\w+)\\s*=\\s*${base}\\s*\\([^)]*\\)`, 'g'),
+            '$1 $2 = {}'
+          );
+          code = code.replace(new RegExp(`\\b${base}\\s*\\(`, 'g'), '(0 && (');
+          console.warn(`[remotion] stripped hallucinated import: ${base}`);
+          return null;
+        })
+        .filter(Boolean);
+
+      if (cleaned.length === 0) {
+        return 'import { useCurrentFrame, useVideoConfig, interpolate, spring, Sequence, AbsoluteFill } from \'remotion\';';
+      }
+      return `import { ${cleaned.join(', ')} } from 'remotion';`;
+    }
+  );
+}
 
 // ─── Simple async mutex ────────────────────────────────────────────────────────
 // Remotion bundling modifies shared files, so only one detailed render at a time.
@@ -136,25 +197,60 @@ async function concatClips(clipPaths, outputPath, tempDir) {
 async function writeSceneFiles(sceneDataArray, sectionScripts) {
   await fs.mkdir(SCENES_DIR, { recursive: true });
 
-  for (const { sectionIndex, code, durationInFrames } of sceneDataArray) {
+  for (const { sectionIndex, code: rawCode, durationInFrames } of sceneDataArray) {
     const inner = `_SceneInner${sectionIndex}`;
     const cls = `_EB${sectionIndex}`;
     const exported = `Scene${sectionIndex}`;
 
+    // Sanitize remotion imports first (strip hallucinated API names)
+    const code = sanitizeRemotionImports(rawCode);
+
     // ── 1. Separate import lines from body ──────────────────────────────────
+    // Uses a stateful parser to handle multi-line imports that the AI sometimes
+    // generates (e.g. import {\n  X,\n  Y\n} from 'remotion'). A naive line-by-
+    // line check would hoist only the first line, leaving an unclosed import
+    // that causes esbuild to error with "Expected 'as'".
     const lines = code.split("\n");
     const importLines = [];
     const bodyLines = [];
+    let pendingImport = '';
+
     for (const line of lines) {
       const trimmed = line.trim();
+
+      if (pendingImport) {
+        // Continue collecting a multi-line import
+        pendingImport += ' ' + trimmed;
+        // Complete when we see `from '...'` / `from "..."` or a bare semicolon
+        if (/from\s+['"]/.test(trimmed) || /;\s*$/.test(trimmed)) {
+          const normalized = pendingImport.replace(/\s+/g, ' ').trim();
+          if (!importLines.some((l) => l === normalized)) {
+            importLines.push(normalized);
+          }
+          pendingImport = '';
+        }
+        continue;
+      }
+
       if (/^import\s+/.test(trimmed)) {
-        // Deduplicate: don't add the same import twice
-        if (!importLines.some((l) => l.trim() === trimmed)) {
-          importLines.push(line);
+        // Check if import is complete on this single line
+        if (/from\s+['"]/.test(trimmed) || /^import\s+['"]/.test(trimmed)) {
+          // Single-line complete import (normal case + side-effect imports)
+          if (!importLines.some((l) => l === trimmed)) {
+            importLines.push(trimmed);
+          }
+        } else {
+          // Multi-line import starting (e.g. "import {")
+          pendingImport = trimmed;
         }
       } else {
         bodyLines.push(line);
       }
+    }
+
+    // Safety: push any dangling incomplete import
+    if (pendingImport) {
+      importLines.push(pendingImport);
     }
 
     // Make sure React is always imported (error boundary needs it)
@@ -169,25 +265,37 @@ async function writeSceneFiles(sceneDataArray, sectionScripts) {
     body = body.replace(/export\s*\{[^}]*\}\s*;?/g, "");
     body = body.replace(/\bexport\s+(?=(?:const|let|var|function|class)\s)/g, "");
 
+    // ── 2.5 Normalize Scene{N} → Scene ──────────────────────────────────────
+    // AI fix / rescue code may name the component Scene0, Scene1 etc.
+    // The IIFE expects bare `Scene`, so normalize before wrapping.
+    body = body.replace(new RegExp(`\\bScene${sectionIndex}\\b`, 'g'), 'Scene');
+
     // ── 3. const/let Scene → var Scene (var allows re-declaration) ──────────
     body = body.replace(/\b(const|let)\s+Scene\b/g, "var Scene");
 
     // ── 4. function Scene( → var Scene = function( ─────────────────────────
     body = body.replace(/\bfunction\s+Scene\s*\(/g, "var Scene = function(");
 
-    // ── 5. Wrap in IIFE ─────────────────────────────────────────────────────
+    // ── 5. Wrap in IIFE with try/catch for module-level error capture ───────
     const wrappedCode = `${importLines.join("\n")}
 
 // ── AI scene code (wrapped in IIFE for scope isolation) ─────────────────────
-const ${inner} = (() => {
+let ${inner};
+try {
+  ${inner} = (() => {
 ${body}
-  return typeof Scene !== 'undefined' ? Scene : () => React.createElement('div', { style: { width:'100%', height:'100%', background:'#0a0a0f', display:'flex', alignItems:'center', justifyContent:'center' } }, React.createElement('div', { style: { color:'#fff', fontSize:48, fontFamily:'system-ui' } }, 'Scene ${sectionIndex}'));
-})();
+    return typeof Scene !== 'undefined' ? Scene : () => React.createElement('div', { style: { width:'100%', height:'100%', background:'#0a0a0f', display:'flex', alignItems:'center', justifyContent:'center' } }, React.createElement('div', { style: { color:'#fff', fontSize:48, fontFamily:'system-ui' } }, 'Scene ${sectionIndex}'));
+  })();
+} catch (_moduleErr) {
+  console.error('[Scene${sectionIndex} MODULE_ERROR] ' + (_moduleErr && _moduleErr.message ? _moduleErr.message : String(_moduleErr)));
+  ${inner} = () => React.createElement('div', { style: { width:'100%', height:'100%', background:'#0a0a0f', display:'flex', alignItems:'center', justifyContent:'center', padding:80 } }, React.createElement('div', { style:{ color:'#ef4444', fontSize:36, fontFamily:'system-ui', textAlign:'center', lineHeight:1.5 } }, 'Module error: ' + (_moduleErr && _moduleErr.message ? _moduleErr.message : String(_moduleErr)).slice(0, 120)));
+}
 
-// ── Error boundary (DO NOT EDIT) ────────────────────────────────────────────
+// ── Error boundary with runtime error logging (DO NOT EDIT) ─────────────────
 class ${cls} extends React.Component {
   constructor(p) { super(p); this.state = { err: null }; }
   static getDerivedStateFromError(e) { return { err: String(e && e.message ? e.message : e) }; }
+  componentDidCatch(e) { console.error('[Scene${sectionIndex} RENDER_ERROR] ' + (e && e.message ? e.message : String(e))); }
   render() {
     if (this.state.err) {
       return React.createElement(
@@ -235,15 +343,15 @@ async function validateJsx(filePath) {
   try {
     const source = await fs.readFile(filePath, "utf8");
     await esbuild.transform(source, {
-      loader: "jsx",
+      loader: "tsx",
       jsx: "automatic",
       target: "es2020",
     });
     return null; // valid
   } catch (err) {
-    // Extract just the first error message (esbuild provides rich detail)
-    const firstLine = (err.message || String(err)).split("\n")[0];
-    return firstLine.slice(0, 300);
+    // Show first 3 lines of the error for debugging (line 1 is generic, line 2+ has actual detail)
+    const errLines = (err.message || String(err)).split("\n").slice(0, 3).join(" | ");
+    return errLines.slice(0, 500);
   }
 }
 
@@ -286,28 +394,89 @@ export const RemotionRoot = () => (
 }
 
 /**
- * Replace a failed scene with a simple fallback so the bundle doesn't crash.
+ * Replace a failed scene by trying AI rescue first, then falling back to
+ * a truly minimal text-only scene as the nuclear option.
  */
 async function replaceWithFallback(sectionIndex, sectionText, durationInFrames) {
-  const safeText = (sectionText || "").replace(/`/g, "'").replace(/\\/g, "\\\\").slice(0, 250);
+  // Try AI rescue first — ask Flash for a simple contextual scene
+  try {
+    const rescueCode = await generateRescueFallback(sectionIndex, sectionText, durationInFrames);
+    if (rescueCode) {
+      const scenePath = path.join(SCENES_DIR, `Scene${sectionIndex}.jsx`);
+      await fs.writeFile(scenePath, rescueCode, "utf8");
+      // Validate rescue code too — AI rescue can also produce broken syntax
+      const rescueError = await validateJsx(scenePath);
+      if (rescueError) {
+        console.warn(`[remotion] scene ${sectionIndex} rescue also has syntax error: ${rescueError}`);
+        // Fall through to nuclear fallback below
+      } else {
+        console.log(`[remotion] scene ${sectionIndex} replaced with AI rescue`);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn(`[remotion] scene ${sectionIndex} AI rescue failed: ${err.message}`);
+  }
+
+  // Nuclear fallback — just text on dark gradient, zero syntax risk
+  const safeText = (sectionText || "").replace(/`/g, "'").replace(/\\/g, "\\\\").slice(0, 200);
+  const phase = Math.floor(durationInFrames / 3);
+  const p1 = phase;
+  const p2 = phase;
+  const p3 = Math.max(1, durationInFrames - p1 - p2);
+  const t1 = safeText.slice(0, 70);
+  const t2 = safeText.slice(70, 150) || t1;
+  const t3 = safeText.slice(150) || t2;
 
   const fallback = `import React from 'react';
-import { useCurrentFrame, interpolate, AbsoluteFill, useVideoConfig } from 'remotion';
+import { useCurrentFrame, interpolate, AbsoluteFill, useVideoConfig, Sequence } from 'remotion';
 
 export const Scene${sectionIndex} = () => {
   const frame = useCurrentFrame();
-  const { durationInFrames: dur } = useVideoConfig();
-  const fadeIn = interpolate(frame, [0, 25], [0, 1], { extrapolateRight: 'clamp' });
-  const fadeOut = interpolate(frame, [dur - 20, dur], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+  const { durationInFrames } = useVideoConfig();
+  const fadeIn = interpolate(frame, [0, 15], [0, 1], { extrapolateRight: 'clamp' });
+  const fadeOut = interpolate(frame, [durationInFrames - 15, durationInFrames], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
   const opacity = fadeIn * fadeOut;
-  const slideY = interpolate(frame, [0, 30], [50, 0], { extrapolateRight: 'clamp' });
-  const barW = interpolate(frame, [10, Math.min(90, dur - 10)], [0, 1200], { extrapolateRight: 'clamp' });
 
   return (
-    <AbsoluteFill style={{ background: 'linear-gradient(135deg,#0a0a0f,#1a1a2e)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '100px' }}>
-      <div style={{ position: 'absolute', width: barW, height: 6, background: 'linear-gradient(90deg,#6366f1,#06b6d4)', borderRadius: 99, top: '42%', opacity }} />
-      <div style={{ opacity, transform: \`translateY(\${slideY}px)\`, color: '#fff', fontSize: '58px', fontWeight: 700, textAlign: 'center', lineHeight: 1.5, maxWidth: '1480px', fontFamily: 'system-ui,-apple-system,sans-serif' }}>
-        ${"`"}${safeText}${"`"}
+    <AbsoluteFill style={{ background: 'linear-gradient(160deg, #0a0a0f 0%, #0e0e28 100%)', opacity }}>
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '62%',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    padding: '60px 80px 0 80px', boxSizing: 'border-box' }}>
+        <div style={{ width: 120, height: 120, borderRadius: '50%',
+                      background: 'radial-gradient(circle, #6366f1 0%, transparent 70%)',
+                      opacity: 0.3 + 0.2 * Math.sin(frame * 0.05) }} />
+      </div>
+      <div style={{ position: 'absolute', bottom: 0, left: 0, width: '100%', height: '38%',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    padding: '0 120px 60px 120px', boxSizing: 'border-box' }}>
+        <Sequence from={0} durationInFrames={${p1}}>
+          <AbsoluteFill style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 120px 60px 120px', boxSizing: 'border-box' }}>
+            <div style={{ color: '#fff', fontSize: '44px', fontWeight: 700, textAlign: 'center', lineHeight: 1.55,
+                          maxWidth: '1620px', fontFamily: 'system-ui',
+                          opacity: interpolate(frame, [0, 18], [0, 1], { extrapolateRight: 'clamp' }) }}>
+              {\`${t1}\`}
+            </div>
+          </AbsoluteFill>
+        </Sequence>
+        <Sequence from={${p1}} durationInFrames={${p2}}>
+          <AbsoluteFill style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 120px 60px 120px', boxSizing: 'border-box' }}>
+            <div style={{ color: '#e0e7ff', fontSize: '44px', fontWeight: 700, textAlign: 'center', lineHeight: 1.55,
+                          maxWidth: '1620px', fontFamily: 'system-ui',
+                          opacity: interpolate(frame, [0, 18], [0, 1], { extrapolateRight: 'clamp' }) }}>
+              {\`${t2}\`}
+            </div>
+          </AbsoluteFill>
+        </Sequence>
+        <Sequence from={${p1 + p2}} durationInFrames={${p3}}>
+          <AbsoluteFill style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 120px 60px 120px', boxSizing: 'border-box' }}>
+            <div style={{ color: '#a5f3fc', fontSize: '44px', fontWeight: 700, textAlign: 'center', lineHeight: 1.55,
+                          maxWidth: '1620px', fontFamily: 'system-ui',
+                          opacity: interpolate(frame, [0, 18], [0, 1], { extrapolateRight: 'clamp' }) }}>
+              {\`${t3}\`}
+            </div>
+          </AbsoluteFill>
+        </Sequence>
       </div>
     </AbsoluteFill>
   );
@@ -316,6 +485,377 @@ export default Scene${sectionIndex};
 `;
 
   await fs.writeFile(path.join(SCENES_DIR, `Scene${sectionIndex}.jsx`), fallback, "utf8");
+  console.log(`[remotion] scene ${sectionIndex} replaced with minimal fallback`);
+}
+
+/**
+ * Ask Gemini Flash to generate a rescue scene — simpler prompt, more reliable output.
+ * Returns valid JSX code string or null.
+ */
+async function generateRescueFallback(sectionIndex, sectionText, durationInFrames) {
+  const genAI = new GoogleGenerativeAI(env.geminiApiKey);
+  const model = genAI.getGenerativeModel(
+    { model: "gemini-2.5-flash" },
+    { apiVersion: "v1beta" }
+  );
+
+  const prompt = `Write a COMPLETE Remotion JSX component file for this narration.
+Keep it simple — this is a rescue generation, so reliability is more important than complexity.
+
+NARRATION: "${sectionText.slice(0, 300)}"
+DURATION: ${durationInFrames} frames at 30fps
+COMPONENT NAME: Scene${sectionIndex} (export const Scene${sectionIndex} and export default Scene${sectionIndex})
+
+STRICT RULES:
+1. First line: import React from 'react';
+2. Import ONLY: useCurrentFrame, useVideoConfig, interpolate, spring, Sequence, AbsoluteFill from 'remotion'
+   DO NOT import: interpolateColor, useSequenceConfig, useSpring, animated, Transition — they don't exist
+   If you need color interpolation: import { interpolateColors } from 'remotion' (with an 's')
+3. PLAIN JAVASCRIPT ONLY — NO TypeScript. No type annotations, no : number, no interface, no React.FC, no generics <T>
+4. Use: const frame = useCurrentFrame(); const { fps, durationInFrames } = useVideoConfig();
+4. Background: dark gradient linear-gradient(160deg, #0a0a0f 0%, #0e0e28 100%)
+5. TWO zones inside AbsoluteFill:
+   - top 62%: position:'absolute', top:0, height:'62%' — SVG with animated shapes RELATED to the narration
+   - bottom 38%: position:'absolute', bottom:0, height:'38%' — narration text in Sequence blocks
+6. For CSS transforms use STRING CONCAT: 'translateY(' + value + 'px)' — NEVER use backtick template literals inside JSX
+7. All interpolate calls need { extrapolateRight: 'clamp' }
+8. SVG shapes must visually represent the narration content — no random generic shapes
+9. Under 80 lines total. Simple but contextual.
+
+Return ONLY raw JSX. No markdown fences. No explanation.`;
+
+  const result = await model.generateContent({
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { thinkingConfig: { thinkingBudget: 5000 } },
+  });
+
+  let code = result.response.text()
+    .replace(/^```(?:jsx?|tsx?|javascript|typescript)?\s*\n?/im, "")
+    .replace(/\n?```\s*$/im, "")
+    .trim();
+
+  const idx = code.indexOf("import ");
+  if (idx > 0) code = code.slice(idx);
+
+  // Sanitize hallucinated remotion imports
+  code = sanitizeRemotionImports(code);
+
+  // Basic validation
+  if (code.includes("from 'remotion'") && code.includes("export") && code.includes(`Scene${sectionIndex}`)) {
+    return code;
+  }
+  return null;
+}
+
+// ─── Scene Compiler: Pre-render Validation ─────────────────────────────────────
+
+/**
+ * AI-powered scene code fixer.
+ * Sends the original code + detected runtime errors to Gemini Flash,
+ * which returns a corrected version of the component.
+ */
+async function aiFixSceneCode(sectionIndex, originalCode, errors, durationInFrames, sectionScript) {
+  const errorSummary = errors.map(e => `• ${e}`).join('\n');
+
+  const prompt = `Fix this Remotion JSX scene component that has runtime errors.
+
+COMPONENT NAME: Scene (use bare "Scene" — the build pipeline renames it)
+DURATION: ${durationInFrames} frames at 30fps
+NARRATION CONTEXT: "${(sectionScript || '').slice(0, 250)}"
+
+CURRENT CODE:
+\`\`\`jsx
+${originalCode}
+\`\`\`
+
+RUNTIME ERRORS DETECTED DURING TEST RENDER:
+${errorSummary}
+
+FIX REQUIREMENTS:
+1. Fix ALL the runtime errors while preserving the scene's visual intent
+2. Make sure ALL variables are defined before use (common: color, fontFamily, duration, items, data, colors, sizes)
+3. All spring() calls must have valid numeric durationInFrames (never undefined/Infinity)
+4. interpolate() rules — THIS IS THE #1 MOST COMMON ERROR:
+   a. inputRange MUST be a plain numeric array literal, e.g. [0, 30, 60] — NEVER pass a variable or expression
+   b. inputRange values must be monotonically increasing (each value > previous)
+   c. outputRange must be the same length as inputRange
+   d. The first argument (frame value) must always be a number
+   e. Always add { extrapolateRight: 'clamp' } as the last argument
+   f. WRONG: interpolate(frame, range, [...])  CORRECT: interpolate(frame, [0, 30, 60], [0, 1, 1], { extrapolateRight: 'clamp' })
+5. Helper components must receive ALL required props when called
+6. For CSS transforms use string concatenation: 'translateY(' + value + 'px)' — NEVER template literals inside JSX style
+7. PLAIN JAVASCRIPT ONLY — no TypeScript annotations, no : number, no interface, no React.FC
+8. Use: const frame = useCurrentFrame(); const { fps, durationInFrames } = useVideoConfig();
+9. SVG values that use interpolate() must be clamped to valid ranges:
+   - circle radius: Math.max(0, interpolate(...)) — never negative
+   - opacity: clamp between 0 and 1
+   - strokeWidth: Math.max(0, ...)
+10. Define ALL colors as string constants at the top of the component, e.g.: const primaryColor = '#3B82F6';
+
+IMPORT RULES:
+- First line: import React from 'react';
+- Import ONLY from 'react' and 'remotion'
+- Valid remotion exports: useCurrentFrame, useVideoConfig, interpolate, interpolateColors, spring, Sequence, AbsoluteFill, Easing, Img, Loop, Series, Freeze, Video, Audio, staticFile
+- DO NOT import: interpolateColor, useSequenceConfig, useSpring, animated, Transition, motion
+- If you need color interpolation: interpolateColors (with an 's')
+
+EXPORT: export const Scene and export default Scene
+(Do NOT append a number to Scene — the build pipeline handles indexing.)
+
+Return ONLY the fixed JSX code. No markdown fences. No explanation.`;
+
+  const genAI = new GoogleGenerativeAI(env.geminiApiKey);
+  const model = genAI.getGenerativeModel(
+    { model: "gemini-2.5-flash" },
+    { apiVersion: "v1beta" }
+  );
+
+  const result = await model.generateContent({
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { thinkingConfig: { thinkingBudget: 10000 } },
+  });
+
+  let code = result.response.text()
+    .replace(/^```(?:jsx?|tsx?|javascript|typescript)?\s*\n?/im, "")
+    .replace(/\n?```\s*$/im, "")
+    .trim();
+
+  const startIdx = code.indexOf("import ");
+  if (startIdx > 0) code = code.slice(startIdx);
+
+  code = sanitizeRemotionImports(code);
+
+  if (code.includes("from 'remotion'") && (code.includes('Scene') || code.includes(`Scene${sectionIndex}`))) {
+    return code;
+  }
+  return null;
+}
+
+/**
+ * Pre-render Scene Compiler / Validator.
+ *
+ * After bundling all scenes, this function renders 2 test frames per scene
+ * using renderStill(). Console errors from the browser (MODULE_ERROR,
+ * RENDER_ERROR, ReferenceError, TypeError, etc.) are captured via
+ * onBrowserLog. Failed scenes are sent to AI for fixing, re-written,
+ * re-bundled, and re-validated — up to MAX_FIX_ROUNDS times.
+ *
+ * Returns the (possibly updated) bundle path.
+ */
+async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tempDir) {
+  const MAX_FIX_ROUNDS = 2;
+  let currentBundle = bundlePath;
+  let scenesToCheck = sceneDataArray.map(s => s.sectionIndex);
+
+  console.log(`[compiler] ── Pre-render validation: ${scenesToCheck.length} scene(s) ──`);
+
+  for (let round = 0; round < MAX_FIX_ROUNDS; round++) {
+    const failures = [];
+
+    for (const idx of scenesToCheck) {
+      const sceneData = sceneDataArray.find(s => s.sectionIndex === idx);
+      if (!sceneData) continue;
+
+      const errors = [];
+      const clipId = `Scene${idx}`;
+
+      try {
+        const composition = await selectComposition({
+          serveUrl: currentBundle,
+          id: clipId,
+          inputProps: {},
+        });
+
+        // Test at 2 frames: start and midpoint (exercises interpolation ranges)
+        const midFrame = Math.min(
+          Math.floor(sceneData.durationInFrames / 2),
+          sceneData.durationInFrames - 1
+        );
+        const testFrames = [0, midFrame];
+
+        for (const frame of testFrames) {
+          const testOutput = path.join(
+            tempDir || os.tmpdir(),
+            `_validate_s${idx}_f${frame}.jpeg`
+          );
+
+          try {
+            await renderStill({
+              composition,
+              serveUrl: currentBundle,
+              output: testOutput,
+              frame,
+              imageFormat: "jpeg",
+              logLevel: "error",
+              overwrite: true,
+              timeoutInMilliseconds: 15000,
+              onBrowserLog: (log) => {
+                const text = typeof log.text === "string" ? log.text : String(log.text);
+                // SVG attribute browser warnings are cosmetic (e.g. negative radius,
+                // bad transform syntax) — they don't crash the component, so skip them.
+                const isSvgAttrWarning = /^Error:\s*<\w+>\s+attribute\b/.test(text);
+
+                const isSceneError = !isSvgAttrWarning && (
+                  /\bMODULE_ERROR\b|\bRENDER_ERROR\b/.test(text) ||
+                  /\b(?:ReferenceError|TypeError|SyntaxError|RangeError)\b/.test(text) ||
+                  (log.type === "error" && !/^Warning:/.test(text) && !/React does not recognize/.test(text) && !/^JSHandle@/.test(text))
+                );
+
+                if (isSceneError) {
+                  errors.push(`[frame ${frame}] ${text.slice(0, 300)}`);
+                }
+              },
+            });
+          } finally {
+            try { await fs.unlink(testOutput); } catch (_) {}
+          }
+        }
+      } catch (err) {
+        // renderStill itself threw — fatal error (module load failure, timeout, etc.)
+        errors.push(`[fatal] ${(err.message || String(err)).slice(0, 300)}`);
+      }
+
+      // Deduplicate errors (same error can fire at multiple frames)
+      const uniqueErrors = [...new Set(errors)];
+
+      if (uniqueErrors.length > 0) {
+        console.warn(`[compiler] ❌ Scene ${idx} FAILED (${uniqueErrors.length} error(s)):`);
+        uniqueErrors.forEach(e => console.warn(`  ${e}`));
+        failures.push({ sectionIndex: idx, errors: uniqueErrors });
+      } else {
+        console.log(`[compiler] ✅ Scene ${idx} passed`);
+      }
+    }
+
+    if (failures.length === 0) {
+      console.log(`[compiler] ✅ All scenes validated successfully!`);
+      return currentBundle;
+    }
+
+    // ── Fix failed scenes ───────────────────────────────────────────────────
+    console.log(`[compiler] 🔧 Fixing ${failures.length} scene(s) (round ${round + 1}/${MAX_FIX_ROUNDS})...`);
+    let anyFixed = false;
+
+    for (const { sectionIndex, errors } of failures) {
+      const sceneData = sceneDataArray.find(s => s.sectionIndex === sectionIndex);
+      if (!sceneData) continue;
+
+      try {
+        const fixedCode = await aiFixSceneCode(
+          sectionIndex,
+          sceneData.code,
+          errors,
+          sceneData.durationInFrames,
+          sectionScripts[sectionIndex]
+        );
+
+        if (fixedCode) {
+          // Re-process through full writeSceneFiles pipeline (sanitize → wrap → esbuild check)
+          await writeSceneFiles(
+            [{ sectionIndex, code: fixedCode, durationInFrames: sceneData.durationInFrames }],
+            sectionScripts
+          );
+          // Update sceneData.code so the NEXT round fixes the already-improved code,
+          // not the original broken version (this was a critical bug — round 2 was
+          // always re-fixing the same original code and making the same mistakes).
+          sceneData.code = fixedCode;
+          console.log(`[compiler] Scene ${sectionIndex} rewritten with AI fix`);
+          anyFixed = true;
+        } else {
+          console.warn(`[compiler] AI fix for scene ${sectionIndex} returned empty — using rescue fallback`);
+          await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], sceneData.durationInFrames);
+          anyFixed = true;
+        }
+      } catch (fixErr) {
+        console.warn(`[compiler] AI fix for scene ${sectionIndex} threw: ${fixErr.message}`);
+        await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], sceneData.durationInFrames);
+        anyFixed = true;
+      }
+    }
+
+    // ── Re-bundle after fixes ───────────────────────────────────────────────
+    if (anyFixed) {
+      console.log("[compiler] 📦 Re-bundling after fixes...");
+      try { await fs.rm(currentBundle, { recursive: true, force: true }); } catch (_) {}
+      currentBundle = await bundle({
+        entryPoint: ENTRY_POINT,
+        rootDir: REMOTION_DIR,
+        enableCaching: false,
+        webpackOverride: (config) => config,
+      });
+      console.log(`[compiler] Re-bundle ready: ${currentBundle}`);
+    }
+
+    // Next round: only recheck the scenes we just fixed
+    scenesToCheck = failures.map(f => f.sectionIndex);
+  }
+
+  // ── Final safety net: replace persistent failures with rescue fallback ─────
+  // Do one last validation pass on the scenes that were just fixed (round 2).
+  // Any that STILL fail get replaced with nuclear fallback — no broken scenes
+  // will ever reach the render loop.
+  const finalFailures = [];
+  for (const idx of scenesToCheck) {
+    const sceneData = sceneDataArray.find(s => s.sectionIndex === idx);
+    if (!sceneData) continue;
+
+    const errors = [];
+    const clipId = `Scene${idx}`;
+    try {
+      const composition = await selectComposition({
+        serveUrl: currentBundle,
+        id: clipId,
+        inputProps: {},
+      });
+      await renderStill({
+        composition,
+        serveUrl: currentBundle,
+        output: path.join(tempDir || os.tmpdir(), `_validate_final_s${idx}.jpeg`),
+        frame: 0,
+        imageFormat: "jpeg",
+        logLevel: "error",
+        overwrite: true,
+        timeoutInMilliseconds: 15000,
+        onBrowserLog: (log) => {
+          const text = typeof log.text === "string" ? log.text : String(log.text);
+          const isSvgAttrWarning = /^Error:\s*<\w+>\s+attribute\b/.test(text);
+          if (!isSvgAttrWarning && (
+              /MODULE_ERROR|RENDER_ERROR|ReferenceError|TypeError|SyntaxError|RangeError/.test(text) ||
+              (log.type === "error" && !/^Warning:|React does not recognize|^JSHandle@/.test(text)))) {
+            errors.push(text.slice(0, 200));
+          }
+        },
+      });
+    } catch (err) {
+      errors.push((err.message || String(err)).slice(0, 200));
+    }
+    try { await fs.unlink(path.join(tempDir || os.tmpdir(), `_validate_final_s${idx}.jpeg`)); } catch (_) {}
+
+    if (errors.length > 0) {
+      console.warn(`[compiler] Scene ${idx} still broken after all fix rounds — replacing with rescue fallback`);
+      finalFailures.push(idx);
+      await replaceWithFallback(idx, sectionScripts[idx], sceneData.durationInFrames);
+    } else {
+      console.log(`[compiler] ✅ Scene ${idx} passed final validation`);
+    }
+  }
+
+  // Re-bundle one last time if we replaced any scenes
+  if (finalFailures.length > 0) {
+    console.log(`[compiler] 📦 Final re-bundle after replacing ${finalFailures.length} persistent failure(s)...`);
+    try { await fs.rm(currentBundle, { recursive: true, force: true }); } catch (_) {}
+    currentBundle = await bundle({
+      entryPoint: ENTRY_POINT,
+      rootDir: REMOTION_DIR,
+      enableCaching: false,
+      webpackOverride: (config) => config,
+    });
+    console.log(`[compiler] ✅ Final bundle ready`);
+  } else if (scenesToCheck.length > 0) {
+    console.log(`[compiler] ✅ All scenes validated after fix rounds!`);
+  }
+
+  return currentBundle;
 }
 
 // ─── Main render function ──────────────────────────────────────────────────────
@@ -349,6 +889,9 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
     });
     console.log(`[remotion] bundle ready: ${bundlePath}`);
 
+    // ── Pre-render scene compiler: validate each scene with test frames ─────
+    bundlePath = await preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tempDir);
+
     // ── Render each clip ────────────────────────────────────────────────────
     const muxedClipPaths = [];
 
@@ -361,7 +904,7 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
 
       let renderSuccess = false;
 
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const composition = await selectComposition({
             serveUrl: bundlePath,
@@ -376,7 +919,7 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
             outputLocation: clipVideoPath,
             inputProps: {},
             muted: true, // audio added by FFmpeg below
-            concurrency: 4,
+            concurrency: attempt >= 1 ? 2 : 4, // reduce concurrency on retry
             logLevel: "warn",
             timeoutInMilliseconds: 600000, // 10 min per clip
             overwrite: true,
@@ -385,13 +928,18 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
           renderSuccess = true;
           break;
         } catch (renderErr) {
-          console.warn(`[remotion] clip ${sectionIndex} attempt ${attempt + 1} render failed: ${renderErr.message}`);
-          if (attempt === 0) {
-            // Replace with fallback scene and re-bundle only this scene
+          const isTransient = /Target closed|Protocol error|EPIPE|crashed/i.test(renderErr.message);
+          console.warn(`[remotion] clip ${sectionIndex} attempt ${attempt + 1} render failed: ${renderErr.message.slice(0, 200)}`);
+
+          if (attempt === 0 && isTransient) {
+            // Transient browser crash — just retry with lower concurrency, no re-bundle needed
+            console.log(`[remotion] transient error, retrying with lower concurrency...`);
+            await new Promise((r) => setTimeout(r, 2000));
+          } else if (attempt <= 1) {
+            // Persistent failure — replace with fallback scene and re-bundle
             console.log(`[remotion] swapping scene ${sectionIndex} for fallback and re-bundling`);
             await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], durationInFrames);
-            await writeRootJsx(sceneDataArray); // update Root.jsx (unchanged, just re-write)
-            // Re-bundle with fallback
+            await writeRootJsx(sceneDataArray);
             if (bundlePath) {
               try { await fs.rm(bundlePath, { recursive: true, force: true }); } catch (_) {}
             }

@@ -122,7 +122,7 @@ const generateDetailedVideo = async (req, res) => {
 
     // ── AI scene code generation ─────────────────────────────────────────────
     console.log("[detailed] step 3/5: AI generating animation code...");
-    const sceneDataArray = await generateScenesCode(finalSections, finalDurations);
+    const sceneDataArray = await generateScenesCode(finalSections, finalDurations, normalized);
 
     // ── Remotion render ──────────────────────────────────────────────────────
     console.log("[detailed] step 4/5: rendering with Remotion...");
