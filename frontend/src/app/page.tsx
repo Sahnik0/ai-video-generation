@@ -1,18 +1,9 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { EnhancedStepStatus } from "../components/EnhancedStepStatus";
-import { EnhancedVideoGrid } from "../components/EnhancedVideoGrid";
-import { LoadingSpinner } from "../components/LoadingSpinner";
 import { Notification } from "../components/Notification";
 import { ThemeToggle } from "../components/ThemeToggle";
-
-const steps = [
-  "Generating script with AI",
-  "Searching for relevant images",
-  "Creating voice narration",
-  "Rendering final video"
-];
+import { CronJobManager } from "../components/CronJobManager";
 
 type VideoItem = {
   id: string;
@@ -20,6 +11,7 @@ type VideoItem = {
   topic: string;
   createdAt: string;
   videoUrl: string | null;
+  youtubeVideoId?: string;
   mode?: "generic" | "detailed";
 };
 
@@ -30,17 +22,17 @@ type NotificationType = {
 };
 
 const SUPPORTED_LANGUAGES = [
-  { code: "en-IN", label: "English", flag: "🇬🇧" },
-  { code: "hi-IN", label: "Hindi / हिन्दी", flag: "🇮🇳" },
-  { code: "bn-IN", label: "Bengali / বাংলা", flag: "🇧🇩" },
-  { code: "te-IN", label: "Telugu / తెలుగు", flag: "🇮🇳" },
-  { code: "ta-IN", label: "Tamil / தமிழ்", flag: "🇮🇳" },
-  { code: "mr-IN", label: "Marathi / मराठी", flag: "🇮🇳" },
-  { code: "gu-IN", label: "Gujarati / ગુજરાતી", flag: "🇮🇳" },
-  { code: "kn-IN", label: "Kannada / ಕನ್ನಡ", flag: "🇮🇳" },
-  { code: "ml-IN", label: "Malayalam / മലയാളം", flag: "🇮🇳" },
-  { code: "od-IN", label: "Odia / ଓଡ଼ିଆ", flag: "🇮🇳" },
-  { code: "pa-IN", label: "Punjabi / ਪੰਜਾਬੀ", flag: "🇮🇳" },
+  { code: "en-IN", label: "English" },
+  { code: "hi-IN", label: "Hindi" },
+  { code: "bn-IN", label: "Bengali" },
+  { code: "te-IN", label: "Telugu" },
+  { code: "ta-IN", label: "Tamil" },
+  { code: "mr-IN", label: "Marathi" },
+  { code: "gu-IN", label: "Gujarati" },
+  { code: "kn-IN", label: "Kannada" },
+  { code: "ml-IN", label: "Malayalam" },
+  { code: "od-IN", label: "Odia" },
+  { code: "pa-IN", label: "Punjabi" },
 ];
 
 export default function Home() {
@@ -48,22 +40,30 @@ export default function Home() {
   const [selectedLanguage, setSelectedLanguage] = useState("en-IN");
   const [selectedMode, setSelectedMode] = useState<"generic" | "detailed">("generic");
   const [isLoading, setIsLoading] = useState(false);
-  const [activeStep, setActiveStep] = useState(0);
   const [currentVideo, setCurrentVideo] = useState<VideoItem | null>(null);
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [progressMessage, setProgressMessage] = useState("");
   const [notifications, setNotifications] = useState<NotificationType[]>([]);
+  const [currentStep, setCurrentStep] = useState(0);
   const videoRef = useRef<HTMLDivElement>(null);
 
   const apiBase = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:4000";
 
-  // Add notification function
+  const steps = [
+    "Analyzing topic with AI",
+    "Processing content",
+    "Generating narration",
+    "Uploading to YouTube"
+  ];
+
+  const getYouTubeVideoId = (url: string): string | null => {
+    const match = url.match(/(?:youtube\.com\/watch\?v=|youtu\.be\/)([^&\s]+)/);
+    return match ? match[1] : null;
+  };
+
   const addNotification = (message: string, type: NotificationType["type"]) => {
     const id = Date.now();
     setNotifications((prev) => [...prev, { id, message, type }]);
-
-    // Auto remove notification after 5 seconds
     setTimeout(() => {
       setNotifications((prev) => prev.filter((notif) => notif.id !== id));
     }, 5000);
@@ -76,7 +76,6 @@ export default function Home() {
       setVideos(data.items || []);
     } catch (err) {
       console.error("Failed to load videos:", err);
-      addNotification("Failed to load videos", "error");
     }
   };
 
@@ -85,52 +84,26 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (!isLoading) {
-      return;
+    if (isLoading) {
+      const interval = setInterval(() => {
+        setCurrentStep((prev) => (prev < steps.length - 1 ? prev + 1 : prev));
+      }, 2500);
+      return () => clearInterval(interval);
+    } else {
+      setCurrentStep(0);
     }
-
-    let stepIndex = 0;
-    setActiveStep(stepIndex);
-
-    const stepMessages = selectedMode === "detailed"
-      ? [
-          "Crafting your story with Gemini AI...",
-          "Generating voice narration per section...",
-          "Writing custom animation code for each scene...",
-          "Rendering with Remotion (5-10 min for detailed mode)...",
-        ]
-      : [
-          "Crafting your story with Gemini AI...",
-          "Finding the perfect visuals on Unsplash...",
-          "Generating natural sounding voice...",
-          "Seamlessly stitching everything together...",
-        ];
-
-    setProgressMessage(stepMessages[stepIndex]);
-
-    const timer = setInterval(() => {
-      stepIndex += 1;
-      if (stepIndex < steps.length) {
-        setActiveStep(stepIndex);
-        setProgressMessage(stepMessages[stepIndex]);
-      }
-    }, 2000);
-
-    return () => clearInterval(timer);
   }, [isLoading]);
 
   const handleGenerate = async () => {
     if (!topic.trim()) {
-      setError("Please enter a topic first");
-      addNotification("Please enter a topic first", "warning");
+      addNotification("Please enter a topic", "warning");
       return;
     }
 
     setError(null);
     setCurrentVideo(null);
     setIsLoading(true);
-    setActiveStep(0);
-    setProgressMessage("Initializing video creation...");
+    setCurrentStep(0);
 
     try {
       const endpoint = selectedMode === "detailed"
@@ -154,337 +127,313 @@ export default function Home() {
         title: data.title,
         topic: data.topic,
         createdAt: new Date().toISOString(),
-        videoUrl: data.videoUrl
+        videoUrl: data.videoUrl,
+        youtubeVideoId: data.youtubeVideoId
       });
 
       await loadVideos();
-      addNotification("Video generated successfully!", "success");
+      addNotification("Video generated successfully", "success");
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Something went wrong";
       setError(errorMessage);
       addNotification(errorMessage, "error");
     } finally {
       setIsLoading(false);
-      setProgressMessage("");
     }
   };
 
   const handleVideoSelect = (video: VideoItem) => {
     setCurrentVideo(video);
-    if (videoRef.current) {
-      videoRef.current.scrollIntoView({ behavior: "smooth" });
-    }
+    videoRef.current?.scrollIntoView({ behavior: "smooth" });
   };
-
-  const handleCopyLink = async (url: string) => {
-    try {
-      await navigator.clipboard.writeText(url);
-      addNotification("Video link copied to clipboard!", "success");
-    } catch (err) {
-      addNotification("Failed to copy link", "error");
-    }
-  };
-
-  const sampleTopics = [
-    "The future of renewable energy",
-    "How AI is changing education",
-    "Journey through the solar system",
-    "History of ancient civilizations",
-    "Healthy eating habits for busy people"
-  ];
 
   return (
-    <main className="min-h-screen px-4 py-8 md:px-8">
+    <main className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
       {/* Notifications */}
-      {notifications.map((notification) => (
-        <Notification
-          key={notification.id}
-          message={notification.message}
-          type={notification.type}
-          onClose={() =>
-            setNotifications((prev) => prev.filter((n) => n.id !== notification.id))
-          }
-        />
-      ))}
+      <div className="fixed top-4 right-4 z-50 space-y-2">
+        {notifications.map((notification) => (
+          <Notification
+            key={notification.id}
+            message={notification.message}
+            type={notification.type}
+            onClose={() =>
+              setNotifications((prev) => prev.filter((n) => n.id !== notification.id))
+            }
+          />
+        ))}
+      </div>
 
-      <div className="max-w-6xl mx-auto space-y-12">
-        {/* Header */}
-        <header className="text-center py-8">
-          <div className="flex justify-between items-center mb-4">
-            <div></div> {/* Spacer for symmetry */}
-            <ThemeToggle />
+      {/* Header */}
+      <header className="border-b border-border/40 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm sticky top-0 z-40">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-foreground">AI Video Studio</h1>
+            <p className="text-sm text-muted-foreground mt-0.5">Generate professional videos with AI</p>
           </div>
-          <h1 className="text-4xl md:text-6xl font-bold text-ink mb-4">
-            AI Video <span className="text-signal">Generator</span>
-          </h1>
-          <p className="text-xl text-steel max-w-2xl mx-auto">
-            Transform any topic into a captivating video with AI-powered scriptwriting, imagery, and voice narration
-          </p>
-        </header>
+          <ThemeToggle />
+        </div>
+      </header>
 
-        {/* Main Content */}
-        <div className="grid gap-8 lg:grid-cols-3">
-          {/* Input Section */}
-          <div className="lg:col-span-2 space-y-8">
-            <section className="brutal-card p-6">
-              <div className="space-y-6">
+      <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
+        {/* Main Generator Section */}
+        <div className="grid lg:grid-cols-3 gap-6">
+          {/* Input Panel */}
+          <div className="lg:col-span-2 space-y-6">
+            <div className="card p-6 space-y-6">
+              <div>
+                <h2 className="text-lg font-semibold text-foreground">Create Video</h2>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Enter a topic and configure your video settings
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                {/* Topic Input */}
                 <div>
-                  <h2 className="text-2xl font-bold text-ink mb-2">Create Your Video</h2>
-                  <p className="text-steel">
-                    Enter any topic and our AI will generate a complete video with script, images, and narration
-                  </p>
+                  <label className="block text-sm font-medium text-foreground mb-2">
+                    Video Topic
+                  </label>
+                  <textarea
+                    className="input min-h-[120px] resize-none"
+                    placeholder="e.g., The future of renewable energy, How AI is changing education..."
+                    value={topic}
+                    onChange={(e) => setTopic(e.target.value)}
+                  />
                 </div>
 
-                <div className="space-y-4">
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <div className="sm:col-span-2">
-                      <label htmlFor="topic" className="block text-sm font-medium text-steel mb-2">
-                        Video Topic
-                      </label>
-                      <textarea
-                        id="topic"
-                        className="brutal-input w-full min-h-[120px] p-4 resize-none"
-                        placeholder="Enter a topic like 'The impact of climate change on coral reefs' or 'How quantum computing works'"
-                        value={topic}
-                        onChange={(event) => setTopic(event.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="language" className="block text-sm font-medium text-steel mb-2">
-                        Narration Language
-                      </label>
-                      <select
-                        id="language"
-                        className="brutal-input w-full p-3 h-[120px] cursor-pointer"
-                        value={selectedLanguage}
-                        onChange={(e) => setSelectedLanguage(e.target.value)}
-                        size={5}
-                      >
-                        {SUPPORTED_LANGUAGES.map((lang) => (
-                          <option key={lang.code} value={lang.code}>
-                            {lang.flag} {lang.label}
-                          </option>
-                        ))}
-                      </select>
-                      <p className="text-xs text-steel mt-1">
-                        Script &amp; voice in selected language
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Mode selector */}
+                {/* Language and Mode */}
+                <div className="grid sm:grid-cols-2 gap-4">
                   <div>
-                    <label htmlFor="mode" className="block text-sm font-medium text-steel mb-2">
-                      Video Mode
+                    <label className="block text-sm font-medium text-foreground mb-2">
+                      Language
                     </label>
                     <select
-                      id="mode"
-                      className="brutal-input w-full p-3 cursor-pointer"
+                      className="input cursor-pointer"
+                      value={selectedLanguage}
+                      onChange={(e) => setSelectedLanguage(e.target.value)}
+                    >
+                      {SUPPORTED_LANGUAGES.map((lang) => (
+                        <option key={lang.code} value={lang.code}>
+                          {lang.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-foreground mb-2">
+                      Generation Mode
+                    </label>
+                    <select
+                      className="input cursor-pointer"
                       value={selectedMode}
                       onChange={(e) => setSelectedMode(e.target.value as "generic" | "detailed")}
                     >
-                      <option value="generic">🎬 Generic — Fast photo slideshow with Ken Burns effects</option>
-                      <option value="detailed">🎨 Detailed — AI-animated content-specific visuals (5-10 min)</option>
+                      <option value="generic">Generic - Fast slideshow</option>
+                      <option value="detailed">Detailed - Animated scenes</option>
                     </select>
-                    {selectedMode === "detailed" && (
-                      <p className="text-xs text-steel mt-1 font-medium text-amber-600 dark:text-amber-400">
-                        ⚠️ Detailed mode generates custom animations with Remotion. Rendering takes 5–10 minutes.
-                      </p>
-                    )}
                   </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    <span className="text-sm text-steel">Try these:</span>
-                    {sampleTopics.map((sampleTopic, index) => (
-                      <button
-                        key={index}
-                        type="button"
-                        className="chip text-xs"
-                        onClick={() => setTopic(sampleTopic)}
-                      >
-                        {sampleTopic}
-                      </button>
-                    ))}
-                  </div>
-
-                  <button
-                    className={`brutal-button w-full py-4 font-bold text-lg uppercase tracking-wide flex items-center justify-center space-x-2 ${
-                      isLoading ? "opacity-75 cursor-not-allowed" : ""
-                    }`}
-                    onClick={handleGenerate}
-                    disabled={isLoading}
-                  >
-                    {isLoading ? (
-                      <>
-                        <div className="w-5 h-5 border-2 border-ink border-t-transparent rounded-full animate-spin"></div>
-                        <span>Generating Video...</span>
-                      </>
-                    ) : (
-                      <>
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        <span>{selectedMode === "detailed" ? "Generate Detailed Video" : "Generate My Video"}</span>
-                      </>
-                    )}
-                  </button>
-
-                  {error && (
-                    <div className="brutal-card bg-red-100 border-red-500 p-4 dark:bg-red-950/30 dark:border-red-700">
-                      <div className="flex items-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-red-600 mr-2" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                        </svg>
-                        <span className="text-red-700 font-medium dark:text-red-200">{error}</span>
-                      </div>
-                    </div>
-                  )}
                 </div>
-              </div>
-            </section>
 
-            {/* Preview Section */}
-            {(isLoading || currentVideo) && (
-              <section className="brutal-card p-6" ref={videoRef}>
-                <h2 className="text-2xl font-bold text-ink mb-4">
-                  {isLoading ? "Generating Your Video" : "Your Generated Video"}
-                </h2>
+                {/* Generate Button */}
+                <button
+                  onClick={handleGenerate}
+                  disabled={isLoading}
+                  className="btn btn-primary w-full h-12 text-base font-medium disabled:opacity-50"
+                >
+                  {isLoading ? (
+                    <span className="flex items-center gap-2">
+                      <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                      </svg>
+                      Generating...
+                    </span>
+                  ) : (
+                    "Generate Video"
+                  )}
+                </button>
 
-                {isLoading ? (
-                  <div className="space-y-6">
-                    <LoadingSpinner message={progressMessage} />
-                    <EnhancedStepStatus steps={steps} activeIndex={activeStep} isLoading={isLoading} />
-                  </div>
-                ) : currentVideo && currentVideo.videoUrl ? (
-                  <div className="space-y-6">
-                    <div className="aspect-video bg-black rounded overflow-hidden">
-                      <video
-                        controls
-                        className="w-full h-full"
-                        autoPlay
-                      >
-                        <source src={currentVideo.videoUrl} type="video/mp4" />
-                        Your browser does not support the video tag.
-                      </video>
-                    </div>
-
-                    <div className="flex flex-wrap gap-3">
-                      <a
-                        href={currentVideo.videoUrl}
-                        download
-                        className="brutal-button px-6 py-3 flex items-center space-x-2"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
-                        </svg>
-                        <span>Download Video</span>
-                      </a>
-
-                      <button
-                        onClick={() => handleCopyLink(currentVideo.videoUrl || "")}
-                        className="brutal-button brutal-button-secondary px-6 py-3 flex items-center space-x-2"
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                          <path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" />
-                          <path d="M6 3a2 2 0 012-2v0h4a2 2 0 012 2v0a2 2 0 01-2 2v0H8a2 2 0 01-2-2v0z" />
-                          <path d="M6 3a2 2 0 012-2v0h4a2 2 0 012 2v0a2 2 0 01-2 2v0H8a2 2 0 01-2-2v0z" />
-                          <path d="M6 3a2 2 0 012-2v0h4a2 2 0 012 2v0a2 2 0 01-2 2v0H8a2 2 0 01-2-2v0z" />
-                          <path d="M6 3a2 2 0 012-2v0h4a2 2 0 012 2v0a2 2 0 01-2 2v0H8a2 2 0 01-2-2v0z" />
-                          <path d="M6 3a2 2 0 012-2v0h4a2 2 0 012 2v0a2 2 0 01-2 2v0H8a2 2 0 01-2-2v0z" />
-                          <path d="M6 3a2 2 0 012-2v0h4a2 2 0 012 2v0a2 2 0 01-2 2v0H8a2 2 0 01-2-2v0z" />
-                          <path d="M11 8a1 1 0 10-2 0v5a1 1 0 102 0V8zM9 11a1 1 0 012 0v2a1 1 0 11-2 0v-2z" />
-                        </svg>
-                        <span>Copy Video Link</span>
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="text-center py-12">
-                    <p className="text-steel">Video could not be loaded</p>
+                {error && (
+                  <div className="p-4 rounded-lg bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/50">
+                    <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
                   </div>
                 )}
-              </section>
+              </div>
+            </div>
+
+            {/* Progress/Result */}
+            {isLoading && (
+              <div className="card p-6">
+                <h3 className="text-lg font-semibold text-foreground mb-4">Processing</h3>
+                <div className="space-y-3">
+                  {steps.map((step, index) => (
+                    <div key={index} className="flex items-center gap-3">
+                      <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${
+                        index < currentStep
+                          ? "bg-green-500 text-white"
+                          : index === currentStep
+                          ? "bg-primary text-white"
+                          : "bg-slate-200 dark:bg-slate-700 text-slate-500"
+                      }`}>
+                        {index < currentStep ? "✓" : index + 1}
+                      </div>
+                      <span className={`text-sm ${
+                        index <= currentStep
+                          ? "text-foreground font-medium"
+                          : "text-muted-foreground"
+                      }`}>
+                        {step}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {currentVideo && currentVideo.videoUrl && !isLoading && (
+              <div className="card p-6 space-y-4" ref={videoRef}>
+                <div>
+                  <h3 className="text-lg font-semibold text-foreground">{currentVideo.title}</h3>
+                  <p className="text-sm text-muted-foreground mt-1">Generated video ready</p>
+                </div>
+                
+                <div className="aspect-video bg-black rounded-lg overflow-hidden">
+                  {currentVideo.videoUrl.includes("youtube.com") || currentVideo.videoUrl.includes("youtu.be") ? (
+                    <iframe
+                      width="100%"
+                      height="100%"
+                      src={`https://www.youtube.com/embed/${getYouTubeVideoId(currentVideo.videoUrl)}`}
+                      title="Video player"
+                      frameBorder="0"
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                      allowFullScreen
+                    ></iframe>
+                  ) : (
+                    <video controls className="w-full h-full">
+                      <source src={currentVideo.videoUrl} type="video/mp4" />
+                    </video>
+                  )}
+                </div>
+
+                <div className="flex gap-3">
+                  <a
+                    href={currentVideo.videoUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-primary px-6 h-10"
+                  >
+                    Watch on YouTube
+                  </a>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(currentVideo.videoUrl || "");
+                      addNotification("Link copied", "success");
+                    }}
+                    className="btn btn-secondary px-6 h-10"
+                  >
+                    Copy Link
+                  </button>
+                </div>
+              </div>
             )}
           </div>
 
-          {/* Sidebar */}
+          {/* Sidebar - Stats */}
           <div className="space-y-6">
-            {/* Stats Card */}
-            <div className="brutal-card p-6">
-              <h3 className="text-lg font-bold text-ink mb-4">Your Video Stats</h3>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="brutal-card p-3 text-center">
-                  <div className="text-2xl font-bold text-signal">{videos.length}</div>
-                  <div className="text-sm text-steel">Videos Created</div>
+            <div className="card p-6">
+              <h3 className="text-sm font-semibold text-foreground mb-4">Quick Stats</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+                  <div className="text-2xl font-bold text-primary">{videos.length}</div>
+                  <div className="text-xs text-muted-foreground mt-1">Videos</div>
                 </div>
-                <div className="brutal-card p-3 text-center">
-                  <div className="text-2xl font-bold text-signal">{steps.length}</div>
-                  <div className="text-sm text-steel">Steps</div>
+                <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50">
+                  <div className="text-2xl font-bold text-primary">{steps.length}</div>
+                  <div className="text-xs text-muted-foreground mt-1">Steps</div>
                 </div>
               </div>
             </div>
 
-            {/* Process Info */}
-            <div className="brutal-card p-6">
-              <h3 className="text-lg font-bold text-ink mb-4">How It Works</h3>
-              {selectedMode === "generic" ? (
-                <ul className="space-y-3 text-sm">
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">1</div>
-                    <span className="text-steel">AI generates a structured script from your topic</span>
-                  </li>
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">2</div>
-                    <span className="text-steel">Relevant images fetched &amp; animated with Ken Burns effects</span>
-                  </li>
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">3</div>
-                    <span className="text-steel">Voice narration created with Sarvam AI bulbul:v2</span>
-                  </li>
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">4</div>
-                    <span className="text-steel">Final video rendered with FFmpeg (~1-2 min)</span>
-                  </li>
-                </ul>
-              ) : (
-                <ul className="space-y-3 text-sm">
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">1</div>
-                    <span className="text-steel">AI generates a detailed script tailored for animation</span>
-                  </li>
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">2</div>
-                    <span className="text-steel">Sarvam AI generates voice narration per section</span>
-                  </li>
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">3</div>
-                    <span className="text-steel">Gemini writes custom Remotion animation code for each scene (molecular diagrams, charts, flowcharts, etc.)</span>
-                  </li>
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">4</div>
-                    <span className="text-steel">Remotion renders each animated scene via headless Chrome</span>
-                  </li>
-                  <li className="flex items-start space-x-2">
-                    <div className="w-6 h-6 rounded-full bg-signal text-ink flex items-center justify-center flex-shrink-0 mt-0.5">5</div>
-                    <span className="text-steel">FFmpeg concatenates all scenes into the final video (~5-10 min total)</span>
-                  </li>
-                </ul>
-              )}
+            <div className="card p-6">
+              <h3 className="text-sm font-semibold text-foreground mb-3">Features</h3>
+              <ul className="space-y-2 text-sm text-muted-foreground">
+                <li className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+                  AI-powered script generation
+                </li>
+                <li className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+                  Multi-language support
+                </li>
+                <li className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+                  Direct YouTube upload
+                </li>
+                <li className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-primary" />
+                  Automated scheduling
+                </li>
+              </ul>
             </div>
           </div>
         </div>
 
-        {/* Previous Videos */}
-        <section className="brutal-card p-6">
-          <div className="flex justify-between items-center mb-6">
-            <h2 className="text-2xl font-bold text-ink">Your Video Library</h2>
-            <span className="text-sm text-steel">
-              {videos.length} {videos.length === 1 ? "video" : "videos"}
-            </span>
+        {/* Cron Jobs */}
+        <CronJobManager apiBase={apiBase} addNotification={addNotification} />
+
+        {/* Video Library */}
+        <div className="card p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">Video Library</h2>
+              <p className="text-sm text-muted-foreground mt-1">
+                {videos.length} {videos.length === 1 ? "video" : "videos"} generated
+              </p>
+            </div>
           </div>
 
-          <EnhancedVideoGrid items={videos} onVideoSelect={handleVideoSelect} />
-        </section>
+          {videos.length === 0 ? (
+            <div className="text-center py-12">
+              <p className="text-muted-foreground">No videos yet. Generate your first video above.</p>
+            </div>
+          ) : (
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {videos.map((video) => (
+                <button
+                  key={video.id}
+                  onClick={() => handleVideoSelect(video)}
+                  className="card p-4 hover:shadow-md transition-all duration-200 text-left group"
+                >
+                  <div className="aspect-video bg-slate-100 dark:bg-slate-800 rounded-lg mb-3 overflow-hidden">
+                    {video.videoUrl && (getYouTubeVideoId(video.videoUrl)) ? (
+                      <img
+                        src={`https://img.youtube.com/vi/${getYouTubeVideoId(video.videoUrl)}/mqdefault.jpg`}
+                        alt={video.title}
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <svg className="w-12 h-12 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                  <h3 className="font-medium text-foreground line-clamp-2 mb-1 text-sm">
+                    {video.title}
+                  </h3>
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className="badge badge-primary">{video.mode || "generic"}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {new Date(video.createdAt).toLocaleDateString()}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </main>
   );

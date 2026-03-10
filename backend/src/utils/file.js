@@ -68,4 +68,18 @@ const downloadFile = async (url, outputPath, maxRetries = 3) => {
   }
 };
 
-module.exports = { ensureDir, fileExists, downloadFile };
+const deleteFile = async (filePath) => {
+  try {
+    if (await fileExists(filePath)) {
+      await fsPromises.unlink(filePath);
+      console.log(`[file] deleted: ${filePath}`);
+      return true;
+    }
+    return false;
+  } catch (error) {
+    console.error(`[file] failed to delete ${filePath}:`, error.message);
+    return false;
+  }
+};
+
+module.exports = { ensureDir, fileExists, downloadFile, deleteFile };

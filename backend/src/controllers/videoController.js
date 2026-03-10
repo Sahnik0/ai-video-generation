@@ -1,12 +1,14 @@
 const path = require("path");
+const fs = require("fs/promises");
 const Video = require("../models/Video");
 const { hashTopic } = require("../utils/hash");
 const { normalizeTopic, trimSectionsToWordLimit } = require("../utils/text");
-const { fileExists, ensureDir } = require("../utils/file");
+const { fileExists, ensureDir, deleteFile } = require("../utils/file");
 const { generateScript } = require("../services/geminiService");
 const { orchestrate, tweakScript, buildSyncPlan } = require("../services/aiAgentService");
 const { generatePerImageAudio, generateSectionAudio } = require("../services/ttsService");
 const { renderSyncedVideo } = require("../services/ffmpegService");
+const { uploadToYouTube } = require("../services/youtubeService");
 
 const storageRoot = path.resolve(__dirname, "../../storage");
 const audioDir = path.join(storageRoot, "audio");
@@ -40,11 +42,12 @@ const generateVideo = async (req, res) => {
     console.log(`[video] start topicHash=${topicHash} language=${language}`);
 
     const cached = await Video.findOne({ topicHash, status: "completed" });
-    if (cached && cached.videoPath && (await fileExists(cached.videoPath))) {
+    if (cached && cached.youtubeUrl) {
       console.log(`[video] cache hit topicHash=${topicHash}`);
       return res.json({
         status: "cached",
-        videoUrl: buildVideoUrl(req, cached.videoPath),
+        videoUrl: cached.youtubeUrl,
+        youtubeVideoId: cached.youtubeVideoId,
         title: cached.title,
         topic: cached.topic
       });
@@ -150,19 +153,40 @@ const generateVideo = async (req, res) => {
     console.log("[video] rendering synced video");
     await renderSyncedVideo({ syncPlan, audioPath, outputPath: videoPath });
 
+    // ─── Upload to YouTube ──────────────────────────────────────────
+    console.log("[video] uploading to YouTube...");
+    const youtubeResult = await uploadToYouTube(videoPath, {
+      title: aiResponse.title || topic,
+      description: `Auto-generated video about: ${topic}\n\nLanguage: ${language}\n\nGenerated sections:\n${sections.map((s, i) => `${i + 1}. ${s.heading}`).join('\n')}`,
+      tags: sections.flatMap(s => s.keywords).slice(0, 10),
+      categoryId: "27", // Education
+      privacyStatus: "unlisted"
+    });
+
+    // ─── Clean up local files ───────────────────────────────────────
+    console.log("[video] cleaning up local files...");
+    await deleteFile(videoPath);
+    await deleteFile(audioPath);
+    // Keep images in cache for potential reuse
+
+    // ─── Update database record ─────────────────────────────────────
     record.title = aiResponse.title;
     record.script = tweakedSections.map((s) => s.script).join(" ");
     record.sections = sections;
     record.imagePathsCount = syncPlan.length;
-    record.audioPath = audioPath;
-    record.videoPath = videoPath;
+    record.youtubeVideoId = youtubeResult.videoId;
+    record.youtubeUrl = youtubeResult.videoUrl;
+    record.youtubeUploadedAt = new Date();
     record.status = "completed";
+    record.generatedAt = new Date();
     await record.save();
-    console.log(`[video] completed topicHash=${topicHash}`);
+    console.log(`[video] completed topicHash=${topicHash}, YouTube: ${youtubeResult.videoUrl}`);
 
     return res.json({
       status: "completed",
-      videoUrl: buildVideoUrl(req, videoPath),
+      videoUrl: youtubeResult.videoUrl,
+      youtubeVideoId: youtubeResult.videoId,
+      videoId: record._id,
       title: record.title,
       topic: record.topic
     });
@@ -184,9 +208,116 @@ const listVideos = async (req, res) => {
     topic: video.topic,
     createdAt: video.createdAt,
     mode: video.mode || "generic",
-    videoUrl: video.videoPath ? buildVideoUrl(req, video.videoPath) : null
+    videoUrl: video.youtubeUrl || null,
+    youtubeVideoId: video.youtubeVideoId || null
   }));
   return res.json({ items });
 };
 
-module.exports = { generateVideo, listVideos };
+/**
+ * Generate video for cron job (no HTTP response)
+ */
+const generateVideoForCron = async (topic, language = "en-IN") => {
+  try {
+    const normalized = normalizeTopic(topic);
+    const topicHash = hashTopic(`${normalized}::${language}`);
+    console.log(`[video-cron] start topicHash=${topicHash} language=${language}`);
+
+    // Check cache
+    const cached = await Video.findOne({ topicHash, status: "completed" });
+    if (cached && cached.youtubeUrl) {
+      console.log(`[video-cron] cache hit, returning existing: ${cached.youtubeUrl}`);
+      return {
+        videoId: cached._id.toString(),
+        youtubeUrl: cached.youtubeUrl,
+        youtubeVideoId: cached.youtubeVideoId,
+        title: cached.title,
+        topic: cached.topic,
+        cached: true
+      };
+    }
+
+    const record = await Video.create({
+      topic: normalized,
+      topicHash,
+      status: "generating",
+      language,
+      createdAt: new Date()
+    });
+
+    const aiResponse = await generateScript(topic, language);
+    const sections = trimSectionsToWordLimit(aiResponse.sections, 300);
+    const topicImagesDir = path.join(imageDir, topicHash);
+    await ensureDir(topicImagesDir);
+
+    const { sectionImages, sectionKeywords } = await orchestrate(sections, topicImagesDir);
+    const tweakedSections = await tweakScript(sections, sectionImages, sectionKeywords);
+
+    await ensureDir(audioDir);
+    await ensureDir(videoDir);
+
+    const audioPath = path.join(audioDir, `${topicHash}.mp3`);
+    const videoPath = path.join(videoDir, `${topicHash}.mp4`);
+
+    let perImageAudios;
+    try {
+      const result = await generatePerImageAudio(tweakedSections, sectionImages, audioPath, tempDir, language);
+      perImageAudios = result.perImageAudios;
+    } catch (err) {
+      const { sectionAudios } = await generateSectionAudio(tweakedSections, audioPath, tempDir, language);
+      perImageAudios = [];
+      const imageCountMap = {};
+      for (const si of sectionImages) imageCountMap[si.sectionIndex] = si.imagePaths.length;
+      for (const sa of sectionAudios) {
+        const imgCount = imageCountMap[sa.sectionIndex] || 1;
+        const perImgDur = sa.duration / imgCount;
+        for (let imgIdx = 0; imgIdx < imgCount; imgIdx += 1) {
+          perImageAudios.push({ sectionIndex: sa.sectionIndex, imageIndex: imgIdx, duration: perImgDur });
+        }
+      }
+    }
+
+    const syncPlan = buildSyncPlan(tweakedSections, sectionImages, perImageAudios);
+    await renderSyncedVideo({ syncPlan, audioPath, outputPath: videoPath });
+
+    // Upload to YouTube
+    const youtubeResult = await uploadToYouTube(videoPath, {
+      title: aiResponse.title || topic,
+      description: `Auto-generated video about: ${topic}\n\nLanguage: ${language}`,
+      tags: sections.flatMap(s => s.keywords).slice(0, 10),
+      categoryId: "27",
+      privacyStatus: "unlisted"
+    });
+
+    // Clean up
+    await deleteFile(videoPath);
+    await deleteFile(audioPath);
+
+    // Update record
+    record.title = aiResponse.title;
+    record.script = tweakedSections.map((s) => s.script).join(" ");
+    record.sections = sections;
+    record.youtubeVideoId = youtubeResult.videoId;
+    record.youtubeUrl = youtubeResult.videoUrl;
+    record.youtubeUploadedAt = new Date();
+    record.status = "completed";
+    record.generatedAt = new Date();
+    await record.save();
+
+    console.log(`[video-cron] completed: ${youtubeResult.videoUrl}`);
+
+    return {
+      videoId: record._id.toString(),
+      youtubeUrl: youtubeResult.videoUrl,
+      youtubeVideoId: youtubeResult.videoId,
+      title: record.title,
+      topic: record.topic,
+      cached: false
+    };
+  } catch (error) {
+    console.error("[video-cron] failed:", error.message);
+    throw error;
+  }
+};
+
+module.exports = { generateVideo, listVideos, generateVideoForCron };

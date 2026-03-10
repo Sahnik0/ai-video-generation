@@ -1,8 +1,9 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-const path = require("path");
 const videosRouter = require("./routes/videos");
+const cronRouter = require("./routes/cron");
+const youtubeRouter = require("./routes/youtube");
 
 const app = express();
 
@@ -14,13 +15,12 @@ app.use(
 app.use(cors({ origin: true }));
 app.use(express.json({ limit: "2mb" }));
 
-const videoPath = path.resolve(__dirname, "../storage/videos");
-app.use("/videos", express.static(videoPath));
-
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
 app.use("/api/videos", videosRouter);
+app.use("/api/cron", cronRouter);
+app.use("/api/youtube", youtubeRouter);
 
 module.exports = { app };

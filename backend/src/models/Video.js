@@ -26,7 +26,13 @@ const VideoSchema = new mongoose.Schema({
   sections: [SectionSchema],
   images: [ImageSchema],
   audioPath: { type: String },
-  videoPath: { type: String },
+  videoPath: { type: String }, // Temporary local path (deleted after upload)
+  
+  // YouTube integration
+  youtubeVideoId: { type: String },
+  youtubeUrl: { type: String },
+  youtubeUploadedAt: { type: Date },
+  
   status: { type: String, required: true },
   language: { type: String, default: "en-IN" },
   mode: { type: String, default: "generic" }, // "generic" | "detailed"
