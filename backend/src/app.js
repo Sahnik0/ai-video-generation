@@ -19,6 +19,11 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
+// Lightweight ping endpoint for uptime monitors / keep-alive pings
+app.get("/ping", (req, res) => {
+  res.status(200).json({ status: "ok", uptime: process.uptime() });
+});
+
 app.use("/api/videos", videosRouter);
 app.use("/api/cron", cronRouter);
 app.use("/api/youtube", youtubeRouter);

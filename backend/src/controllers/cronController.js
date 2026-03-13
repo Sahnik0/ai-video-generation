@@ -5,7 +5,7 @@
  */
 
 const CronJob = require("../models/CronJob");
-const { scheduleJob, cancelJob, isValidCronExpression, calculateNextRun } = require("../services/cronService");
+const { scheduleJob, scheduleIntervalJob, cancelJob, isValidCronExpression, calculateNextRun, executeJob } = require("../services/cronService");
 
 /**
  * GET /api/cron - List all cron jobs
@@ -38,38 +38,91 @@ const getCronJob = async (req, res) => {
 
 /**
  * POST /api/cron - Create a new cron job
- * Body: { topic, language, mode, schedule, isActive }
+ * Body: { topic, language, mode, schedule, isActive, intervalMode, intervalMinutes }
  */
 const createCronJob = async (req, res) => {
   try {
-    const { topic, language = "en-IN", mode = "generic", schedule, isActive = true } = req.body;
+    const { 
+      topic, 
+      language = "en-IN", 
+      mode = "generic", 
+      schedule, 
+      isActive = true,
+      intervalMode = false,
+      intervalMinutes = 30
+    } = req.body;
     
-    if (!topic || !schedule) {
-      return res.status(400).json({ error: "Topic and schedule are required" });
+    if (!topic) {
+      return res.status(400).json({ error: "Topic is required" });
     }
     
-    if (!isValidCronExpression(schedule)) {
-      return res.status(400).json({ error: "Invalid cron expression" });
-    }
+    let nextRun;
     
-    const nextRun = calculateNextRun(schedule);
+    if (intervalMode) {
+      // For interval mode, validate interval minutes
+      if (!intervalMinutes || intervalMinutes < 1) {
+        return res.status(400).json({ error: "Invalid interval minutes" });
+      }
+      
+      // Check if this is the first active interval job
+      const existingIntervalJobs = await CronJob.find({ intervalMode: true, isActive: true });
+      
+      if (existingIntervalJobs.length === 0) {
+        // First interval job - will execute immediately
+        nextRun = new Date();
+      } else {
+        // Not first job - schedule for later
+        nextRun = new Date(Date.now() + intervalMinutes * 60 * 1000);
+      }
+    } else {
+      // For traditional cron mode
+      if (!schedule) {
+        return res.status(400).json({ error: "Schedule is required for cron mode" });
+      }
+      
+      if (!isValidCronExpression(schedule)) {
+        return res.status(400).json({ error: "Invalid cron expression" });
+      }
+      
+      nextRun = calculateNextRun(schedule);
+    }
     
     const job = await CronJob.create({
       topic,
       language,
       mode,
-      schedule,
+      schedule: intervalMode ? "interval" : schedule,
       isActive,
+      intervalMode,
+      intervalMinutes: intervalMode ? intervalMinutes : 30,
       nextRun,
       status: "pending"
     });
     
     // Schedule the job if active
     if (isActive) {
-      scheduleJob(job._id.toString(), schedule);
+      if (intervalMode) {
+        // Check if this is the first active interval job
+        const existingIntervalJobs = await CronJob.find({ 
+          intervalMode: true, 
+          isActive: true,
+          _id: { $ne: job._id }
+        });
+        
+        if (existingIntervalJobs.length === 0) {
+          // Execute immediately
+          console.log(`[cron-api] executing first interval job ${job._id} immediately`);
+          setImmediate(() => executeJob(job._id.toString()));
+        } else {
+          // Schedule for later
+          scheduleIntervalJob(job._id.toString(), intervalMinutes);
+        }
+      } else {
+        scheduleJob(job._id.toString(), schedule);
+      }
     }
     
-    console.log(`[cron-api] created job ${job._id} for topic: ${topic}`);
+    console.log(`[cron-api] created ${intervalMode ? 'interval' : 'cron'} job ${job._id} for topic: ${topic}`);
     res.status(201).json({ success: true, job });
   } catch (error) {
     console.error("[cron-api] create failed:", error.message);

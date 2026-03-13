@@ -9,6 +9,8 @@ type CronJob = {
   mode: "generic" | "detailed";
   schedule: string;
   isActive: boolean;
+  intervalMode?: boolean;
+  intervalMinutes?: number;
   lastRun?: string;
   nextRun?: string;
   lastYouTubeUrl?: string;
@@ -52,8 +54,10 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
   const [newTopic, setNewTopic] = useState("");
   const [newLanguage, setNewLanguage] = useState("en-IN");
   const [newMode, setNewMode] = useState<"generic" | "detailed">("generic");
+  const [scheduleMode, setScheduleMode] = useState<"cron" | "interval">("interval");
   const [selectedPreset, setSelectedPreset] = useState("0 9 * * *");
   const [customSchedule, setCustomSchedule] = useState("");
+  const [intervalMinutes, setIntervalMinutes] = useState(30);
 
   const loadJobs = async () => {
     try {
@@ -78,24 +82,40 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
       return;
     }
 
-    const schedule = selectedPreset || customSchedule;
-    if (!schedule) {
-      addNotification("Please select or enter a schedule", "warning");
-      return;
+    if (scheduleMode === "cron") {
+      const schedule = selectedPreset || customSchedule;
+      if (!schedule) {
+        addNotification("Please select or enter a schedule", "warning");
+        return;
+      }
     }
 
     setLoading(true);
     try {
+      const requestBody = {
+        topic: newTopic,
+        language: newLanguage,
+        mode: newMode,
+        isActive: true,
+      };
+
+      if (scheduleMode === "interval") {
+        Object.assign(requestBody, {
+          intervalMode: true,
+          intervalMinutes: intervalMinutes,
+          schedule: "interval" // placeholder for backend
+        });
+      } else {
+        Object.assign(requestBody, {
+          intervalMode: false,
+          schedule: selectedPreset || customSchedule,
+        });
+      }
+
       const response = await fetch(`${apiBase}/api/cron`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          topic: newTopic,
-          language: newLanguage,
-          mode: newMode,
-          schedule,
-          isActive: true,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
@@ -200,26 +220,81 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
             </select>
           </div>
 
-          <select
-            className="input"
-            value={selectedPreset}
-            onChange={(e) => setSelectedPreset(e.target.value)}
-          >
-            {CRON_PRESETS.map((preset) => (
-              <option key={preset.label} value={preset.value}>
-                {preset.label}
-              </option>
-            ))}
-          </select>
+          {/* Schedule Mode Toggle */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-2">
+              Schedule Type
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setScheduleMode("interval")}
+                className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                  scheduleMode === "interval"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                }`}
+              >
+                ⏱️ Interval Mode
+              </button>
+              <button
+                type="button"
+                onClick={() => setScheduleMode("cron")}
+                className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                  scheduleMode === "cron"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                }`}
+              >
+                📅 Cron Schedule
+              </button>
+            </div>
+          </div>
 
-          {!selectedPreset && (
-            <input
-              type="text"
-              className="input"
-              placeholder="Custom cron expression (e.g., 0 9 * * *)"
-              value={customSchedule}
-              onChange={(e) => setCustomSchedule(e.target.value)}
-            />
+          {scheduleMode === "interval" ? (
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-2">
+                Upload Interval
+              </label>
+              <select
+                className="input"
+                value={intervalMinutes}
+                onChange={(e) => setIntervalMinutes(Number(e.target.value))}
+              >
+                <option value={30}>Every 30 minutes</option>
+                <option value={60}>Every 1 hour</option>
+                <option value={120}>Every 2 hours</option>
+                <option value={180}>Every 3 hours</option>
+                <option value={360}>Every 6 hours</option>
+              </select>
+              <p className="text-xs text-muted-foreground mt-2">
+                ⚡ First video uploads immediately, then repeats every {intervalMinutes} minutes
+              </p>
+            </div>
+          ) : (
+            <>
+              <select
+                className="input"
+                value={selectedPreset}
+                onChange={(e) => setSelectedPreset(e.target.value)}
+              >
+                {CRON_PRESETS.map((preset) => (
+                  <option key={preset.label} value={preset.value}>
+                    {preset.label}
+                  </option>
+                ))}
+              </select>
+
+              {!selectedPreset && (
+                <input
+                  type="text"
+                  className="input"
+                  placeholder="Custom cron expression (e.g., 0 9 * * *)"
+                  value={customSchedule}
+                  onChange={(e) => setCustomSchedule(e.target.value)}
+                />
+              )}
+            </>
           )}
 
           <button
@@ -247,7 +322,13 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                   <div className="flex flex-wrap items-center gap-2 mt-2">
                     <span className="badge badge-primary">{job.language}</span>
                     <span className="badge badge-primary">{job.mode}</span>
-                    <span className="text-xs text-muted-foreground">{job.schedule}</span>
+                    {job.intervalMode ? (
+                      <span className="text-xs text-muted-foreground">
+                        ⏱️ Every {job.intervalMinutes} min
+                      </span>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">{job.schedule}</span>
+                    )}
                   </div>
                   {job.lastYouTubeUrl && (
                     <a
@@ -267,22 +348,30 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                 </div>
 
                 <div className="flex gap-2 flex-shrink-0">
-                  <button
-                    onClick={() => handleToggle(job._id)}
-                    className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                      job.isActive
-                        ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
-                        : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400"
-                    }`}
-                  >
-                    {job.isActive ? "Active" : "Paused"}
-                  </button>
-                  <button
-                    onClick={() => handleDelete(job._id)}
-                    className="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
-                  >
-                    Delete
-                  </button>
+                  {job.status === "completed" && job.lastYouTubeUrl ? (
+                    <span className="px-3 py-1.5 text-xs font-medium rounded-lg bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                      Successfully Uploaded
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => handleToggle(job._id)}
+                        className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                          job.isActive
+                            ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                            : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-400"
+                        }`}
+                      >
+                        {job.isActive ? "Active" : "Paused"}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(job._id)}
+                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/50 transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
