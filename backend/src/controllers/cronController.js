@@ -227,11 +227,32 @@ const toggleCronJob = async (req, res) => {
   }
 };
 
+/**
+ * DELETE /api/cron/completed - Delete all completed cron jobs
+ */
+const deleteCompletedCronJobs = async (_req, res) => {
+  try {
+    const completedJobs = await CronJob.find({ status: "completed" }).select("_id");
+    const ids = completedJobs.map((j) => j._id.toString());
+
+    // Cancel any scheduled tasks for these jobs
+    ids.forEach((id) => cancelJob(id));
+
+    const result = await CronJob.deleteMany({ status: "completed" });
+    console.log(`[cron-api] deleted ${result.deletedCount} completed jobs`);
+    res.json({ success: true, deletedCount: result.deletedCount });
+  } catch (error) {
+    console.error("[cron-api] delete completed failed:", error.message);
+    res.status(500).json({ error: error.message });
+  }
+};
+
 module.exports = {
   listCronJobs,
   getCronJob,
   createCronJob,
   updateCronJob,
   deleteCronJob,
-  toggleCronJob
+  toggleCronJob,
+  deleteCompletedCronJobs
 };

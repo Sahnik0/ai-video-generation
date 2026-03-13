@@ -11,12 +11,14 @@ const {
   createCronJob,
   updateCronJob,
   deleteCronJob,
-  toggleCronJob
+  toggleCronJob,
+  deleteCompletedCronJobs
 } = require("../controllers/cronController");
 
 const router = express.Router();
 
 router.get("/", listCronJobs);
+router.delete("/completed/all", deleteCompletedCronJobs);
 router.get("/:id", getCronJob);
 router.post("/", createCronJob);
 router.put("/:id", updateCronJob);
