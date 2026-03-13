@@ -49,6 +49,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [nowTs, setNowTs] = useState<number>(Date.now());
 
   // Form state
   const [newTopic, setNewTopic] = useState("");
@@ -75,6 +76,26 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
   useEffect(() => {
     loadJobs();
   }, []);
+
+  // Tick to update countdowns
+  useEffect(() => {
+    const timer = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatCountdown = (nextRun?: string) => {
+    if (!nextRun) return "Pending";
+    const diffMs = new Date(nextRun).getTime() - nowTs;
+    if (diffMs <= 0) return "Due now";
+    const minutes = Math.floor(diffMs / 60000);
+    const seconds = Math.floor((diffMs % 60000) / 1000);
+    if (minutes >= 60) {
+      const hours = Math.floor(minutes / 60);
+      const remMinutes = minutes % 60;
+      return `${hours}h ${remMinutes}m`;
+    }
+    return `${minutes}m ${seconds}s`;
+  };
 
   const handleCreate = async () => {
     if (!newTopic.trim()) {
@@ -307,7 +328,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
         </div>
       )}
 
-      <div className="space-y-3">
+      <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
         {jobs.length === 0 ? (
           <p className="text-center text-muted-foreground py-8 text-sm">No scheduled jobs yet. Create one to automate video generation.</p>
         ) : (
@@ -324,10 +345,12 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                     <span className="badge badge-primary">{job.mode}</span>
                     {job.intervalMode ? (
                       <span className="text-xs text-muted-foreground">
-                        ⏱️ Every {job.intervalMinutes} min
+                        ⏱️ Every {job.intervalMinutes} min · Next in {formatCountdown(job.nextRun)}
                       </span>
                     ) : (
-                      <span className="text-xs text-muted-foreground">{job.schedule}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {job.schedule} · Next in {formatCountdown(job.nextRun)}
+                      </span>
                     )}
                   </div>
                   {job.lastYouTubeUrl && (

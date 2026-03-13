@@ -182,7 +182,7 @@ export default function Home() {
           </div>
         </div>
 
-        <div className="card p-6">
+        <div className="card p-6 max-h-[720px] overflow-y-auto">
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-lg font-semibold text-foreground">Video Library</h2>

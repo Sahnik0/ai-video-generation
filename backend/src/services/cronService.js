@@ -68,7 +68,9 @@ const executeJob = async (jobId) => {
     
     // Calculate next run based on mode
     if (job.intervalMode) {
-      const nextRun = new Date(Date.now() + job.intervalMinutes * 60 * 1000);
+      const intervalJobCount = await CronJob.countDocuments({ intervalMode: true, isActive: true });
+      const spacingMinutes = job.intervalMinutes * Math.max(1, intervalJobCount);
+      const nextRun = new Date(Date.now() + spacingMinutes * 60 * 1000);
       job.nextRun = nextRun;
     } else {
       job.nextRun = calculateNextRun(job.schedule);
@@ -82,7 +84,8 @@ const executeJob = async (jobId) => {
     
     // If interval mode, schedule next execution
     if (job.intervalMode) {
-      scheduleIntervalJob(jobId, job.intervalMinutes);
+      const intervalJobCount = await CronJob.countDocuments({ intervalMode: true, isActive: true });
+      scheduleIntervalJob(jobId, job.intervalMinutes, Math.max(1, intervalJobCount));
     }
   } catch (error) {
     console.error(`[cron] job ${jobId} failed:`, error.message);
@@ -95,7 +98,9 @@ const executeJob = async (jobId) => {
       
       // Calculate next run even on failure
       if (job.intervalMode) {
-        const nextRun = new Date(Date.now() + job.intervalMinutes * 60 * 1000);
+        const intervalJobCount = await CronJob.countDocuments({ intervalMode: true, isActive: true });
+        const spacingMinutes = job.intervalMinutes * Math.max(1, intervalJobCount);
+        const nextRun = new Date(Date.now() + spacingMinutes * 60 * 1000);
         job.nextRun = nextRun;
       } else {
         job.nextRun = calculateNextRun(job.schedule);
@@ -106,7 +111,8 @@ const executeJob = async (jobId) => {
       
       // If interval mode, schedule next execution even after failure
       if (job.intervalMode) {
-        scheduleIntervalJob(jobId, job.intervalMinutes);
+        const intervalJobCount = await CronJob.countDocuments({ intervalMode: true, isActive: true });
+        scheduleIntervalJob(jobId, job.intervalMinutes, Math.max(1, intervalJobCount));
       }
     }
   }
@@ -115,7 +121,7 @@ const executeJob = async (jobId) => {
 /**
  * Schedule an interval-based job
  */
-const scheduleIntervalJob = (jobId, intervalMinutes) => {
+const scheduleIntervalJob = (jobId, intervalMinutes, multiplier = 1) => {
   // Cancel existing task if any
   if (activeTasks.has(jobId)) {
     const existingTask = activeTasks.get(jobId);
@@ -128,12 +134,14 @@ const scheduleIntervalJob = (jobId, intervalMinutes) => {
   }
   
   // Schedule next execution
+  const delayMs = intervalMinutes * Math.max(1, multiplier) * 60 * 1000;
+
   const timeoutId = setTimeout(async () => {
     await executeJob(jobId);
-  }, intervalMinutes * 60 * 1000);
+  }, delayMs);
   
   activeTasks.set(jobId, { clear: () => clearTimeout(timeoutId), type: 'interval' });
-  console.log(`[cron] scheduled interval job ${jobId} for ${intervalMinutes} minutes`);
+  console.log(`[cron] scheduled interval job ${jobId} in ${Math.round(delayMs / 60000)} minutes`);
   
   return timeoutId;
 };
@@ -206,30 +214,26 @@ const initializeCronJobs = async () => {
       try {
         if (job.intervalMode) {
           // For interval mode jobs
-          if (!job.lastRun) {
-            // First job - execute immediately
-            console.log(`[cron] executing first interval job ${job._id} immediately`);
-            setImmediate(() => executeJob(job._id.toString()));
-          } else {
-            // Schedule based on next run time
-            const now = new Date();
-            const nextRun = job.nextRun ? new Date(job.nextRun) : new Date(now.getTime() + job.intervalMinutes * 60 * 1000);
-            const delay = Math.max(0, nextRun.getTime() - now.getTime());
-            
-            setTimeout(async () => {
-              await executeJob(job._id.toString());
-            }, delay);
-            
-            activeTasks.set(job._id.toString(), { 
-              clear: () => {}, 
-              type: 'interval' 
-            });
-            console.log(`[cron] scheduled interval job ${job._id} in ${Math.round(delay / 1000)}s`);
-          }
+          // For interval jobs, schedule based on stored nextRun or execute immediately if first run
+          const now = new Date();
+          const effectiveNextRun = job.nextRun ? new Date(job.nextRun) : now;
+          const delay = Math.max(0, effectiveNextRun.getTime() - now.getTime());
+
+          setTimeout(async () => {
+            await executeJob(job._id.toString());
+          }, delay);
+
+          activeTasks.set(job._id.toString(), { 
+            clear: () => {}, 
+            type: 'interval' 
+          });
+          console.log(`[cron] scheduled interval job ${job._id} in ${Math.round(delay / 1000)}s`);
           
-          // Update nextRun if not set
+          // Ensure nextRun exists
           if (!job.nextRun) {
-            job.nextRun = new Date(Date.now() + job.intervalMinutes * 60 * 1000);
+            const intervalJobCount = await CronJob.countDocuments({ intervalMode: true, isActive: true });
+            const spacingMinutes = job.intervalMinutes * Math.max(1, intervalJobCount);
+            job.nextRun = new Date(Date.now() + spacingMinutes * 60 * 1000);
             await job.save();
           }
         } else {

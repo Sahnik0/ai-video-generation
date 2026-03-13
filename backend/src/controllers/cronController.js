@@ -64,16 +64,10 @@ const createCronJob = async (req, res) => {
         return res.status(400).json({ error: "Invalid interval minutes" });
       }
       
-      // Check if this is the first active interval job
+      // Stagger nextRun based on number of existing active interval jobs to avoid simultaneous runs
       const existingIntervalJobs = await CronJob.find({ intervalMode: true, isActive: true });
-      
-      if (existingIntervalJobs.length === 0) {
-        // First interval job - will execute immediately
-        nextRun = new Date();
-      } else {
-        // Not first job - schedule for later
-        nextRun = new Date(Date.now() + intervalMinutes * 60 * 1000);
-      }
+      const spacingMultiplier = existingIntervalJobs.length + 1; // include this job
+      nextRun = new Date(Date.now() + intervalMinutes * spacingMultiplier * 60 * 1000);
     } else {
       // For traditional cron mode
       if (!schedule) {
@@ -102,21 +96,13 @@ const createCronJob = async (req, res) => {
     // Schedule the job if active
     if (isActive) {
       if (intervalMode) {
-        // Check if this is the first active interval job
         const existingIntervalJobs = await CronJob.find({ 
           intervalMode: true, 
           isActive: true,
           _id: { $ne: job._id }
         });
-        
-        if (existingIntervalJobs.length === 0) {
-          // Execute immediately
-          console.log(`[cron-api] executing first interval job ${job._id} immediately`);
-          setImmediate(() => executeJob(job._id.toString()));
-        } else {
-          // Schedule for later
-          scheduleIntervalJob(job._id.toString(), intervalMinutes);
-        }
+        const spacingMultiplier = existingIntervalJobs.length + 1;
+        scheduleIntervalJob(job._id.toString(), intervalMinutes, Math.max(1, spacingMultiplier));
       } else {
         scheduleJob(job._id.toString(), schedule);
       }
