@@ -5,7 +5,7 @@
  */
 
 const CronJob = require("../models/CronJob");
-const { scheduleJob, scheduleIntervalJob, cancelJob, isValidCronExpression, calculateNextRun, executeJob } = require("../services/cronService");
+const { scheduleJob, scheduleIntervalJob, cancelJob, isValidCronExpression, calculateNextRun, executeJob, computeIntervalStart } = require("../services/cronService");
 
 /**
  * GET /api/cron - List all cron jobs
@@ -63,11 +63,8 @@ const createCronJob = async (req, res) => {
       if (!intervalMinutes || intervalMinutes < 1) {
         return res.status(400).json({ error: "Invalid interval minutes" });
       }
-      
-      // Stagger nextRun based on number of existing active interval jobs to avoid simultaneous runs
-      const existingIntervalJobs = await CronJob.find({ intervalMode: true, isActive: true });
-      const spacingMultiplier = existingIntervalJobs.length + 1; // include this job
-      nextRun = new Date(Date.now() + intervalMinutes * spacingMultiplier * 60 * 1000);
+      const firstRun = await computeIntervalStart(intervalMinutes);
+      nextRun = firstRun;
     } else {
       // For traditional cron mode
       if (!schedule) {
@@ -96,13 +93,8 @@ const createCronJob = async (req, res) => {
     // Schedule the job if active
     if (isActive) {
       if (intervalMode) {
-        const existingIntervalJobs = await CronJob.find({ 
-          intervalMode: true, 
-          isActive: true,
-          _id: { $ne: job._id }
-        });
-        const spacingMultiplier = existingIntervalJobs.length + 1;
-        scheduleIntervalJob(job._id.toString(), intervalMinutes, Math.max(1, spacingMultiplier));
+        const startDelayMs = Math.max(0, nextRun.getTime() - Date.now());
+        scheduleIntervalJob(job._id.toString(), intervalMinutes, startDelayMs);
       } else {
         scheduleJob(job._id.toString(), schedule);
       }
@@ -151,7 +143,17 @@ const updateCronJob = async (req, res) => {
     cancelJob(jobId); // Cancel existing schedule
     
     if (job.isActive) {
-      scheduleJob(jobId, job.schedule);
+      if (job.intervalMode) {
+        const startAt = job.nextRun && job.nextRun > new Date()
+          ? new Date(job.nextRun)
+          : await computeIntervalStart(job.intervalMinutes, jobId);
+        job.nextRun = startAt;
+        await job.save();
+        const startDelayMs = Math.max(0, startAt.getTime() - Date.now());
+        scheduleIntervalJob(jobId, job.intervalMinutes, startDelayMs);
+      } else {
+        scheduleJob(jobId, job.schedule);
+      }
     }
     
     console.log(`[cron-api] updated job ${jobId}`);
@@ -204,7 +206,17 @@ const toggleCronJob = async (req, res) => {
     cancelJob(jobId);
     
     if (job.isActive) {
-      scheduleJob(jobId, job.schedule);
+      if (job.intervalMode) {
+        const startAt = job.nextRun && job.nextRun > new Date()
+          ? new Date(job.nextRun)
+          : await computeIntervalStart(job.intervalMinutes, jobId);
+        job.nextRun = startAt;
+        await job.save();
+        const startDelayMs = Math.max(0, startAt.getTime() - Date.now());
+        scheduleIntervalJob(jobId, job.intervalMinutes, startDelayMs);
+      } else {
+        scheduleJob(jobId, job.schedule);
+      }
     }
     
     console.log(`[cron-api] toggled job ${jobId} to ${job.isActive ? "active" : "inactive"}`);
