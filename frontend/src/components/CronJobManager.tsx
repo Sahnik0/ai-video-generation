@@ -11,6 +11,7 @@ type CronJob = {
   isActive: boolean;
   intervalMode?: boolean;
   intervalMinutes?: number;
+  rapid?: boolean;
   lastRun?: string;
   nextRun?: string;
   lastYouTubeUrl?: string;
@@ -58,7 +59,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
   const [scheduleMode, setScheduleMode] = useState<"cron" | "interval">("interval");
   const [selectedPreset, setSelectedPreset] = useState("0 9 * * *");
   const [customSchedule, setCustomSchedule] = useState("");
-  const [intervalMinutes, setIntervalMinutes] = useState(30);
+  const [intervalMinutes, setIntervalMinutes] = useState<number | "rapid">(30);
 
   const loadJobs = async () => {
     try {
@@ -121,10 +122,12 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
       };
 
       if (scheduleMode === "interval") {
+        const rapid = intervalMinutes === "rapid";
         Object.assign(requestBody, {
           intervalMode: true,
-          intervalMinutes: intervalMinutes,
-          schedule: "interval" // placeholder for backend
+          intervalMinutes: rapid ? 0 : intervalMinutes,
+          rapid,
+          schedule: rapid ? "rapid" : "interval"
         });
       } else {
         Object.assign(requestBody, {
@@ -280,8 +283,12 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
               <select
                 className="input"
                 value={intervalMinutes}
-                onChange={(e) => setIntervalMinutes(Number(e.target.value))}
+                onChange={(e) => {
+                  const val = e.target.value === "rapid" ? "rapid" : Number(e.target.value);
+                  setIntervalMinutes(val);
+                }}
               >
+                <option value="rapid">⚡ Rapid (parallel now)</option>
                 <option value={30}>Every 30 minutes</option>
                 <option value={60}>Every 1 hour</option>
                 <option value={120}>Every 2 hours</option>
@@ -289,7 +296,9 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                 <option value={360}>Every 6 hours</option>
               </select>
               <p className="text-xs text-muted-foreground mt-2">
-                ⚡ First video uploads immediately, then repeats every {intervalMinutes} minutes
+                {intervalMinutes === "rapid"
+                  ? "Runs all queued videos in parallel immediately."
+                  : `⚡ First video uploads immediately, then repeats every ${intervalMinutes} minutes`}
               </p>
             </div>
           ) : (
@@ -345,7 +354,9 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                     <span className="badge badge-primary">{job.mode}</span>
                     {job.intervalMode ? (
                       <span className="text-xs text-muted-foreground">
-                        ⏱️ Every {job.intervalMinutes} min · Next in {formatCountdown(job.nextRun)}
+                        {job.rapid
+                          ? "⚡ Rapid · Running now"
+                          : `⏱️ Every ${job.intervalMinutes} min · Next in ${formatCountdown(job.nextRun)}`}
                       </span>
                     ) : (
                       <span className="text-xs text-muted-foreground">

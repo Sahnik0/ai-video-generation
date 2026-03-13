@@ -20,6 +20,7 @@ const CronJobSchema = new mongoose.Schema({
   lastYouTubeUrl: { type: String },
   status: { type: String, enum: ["pending", "running", "completed", "failed"], default: "pending" },
   errorMessage: { type: String },
+  rapid: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

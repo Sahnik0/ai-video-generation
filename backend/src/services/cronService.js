@@ -209,9 +209,11 @@ const initializeCronJobs = async () => {
     for (const job of activeJobs) {
       try {
         if (job.intervalMode) {
-          const computedStart = job.nextRun
-            ? new Date(job.nextRun)
-            : await computeIntervalStart(job.intervalMinutes, job._id.toString());
+          const computedStart = job.rapid
+            ? new Date()
+            : (job.nextRun
+                ? new Date(job.nextRun)
+                : await computeIntervalStart(job.intervalMinutes, job._id.toString()));
           const delay = Math.max(0, computedStart.getTime() - Date.now());
 
           scheduleIntervalJob(job._id.toString(), job.intervalMinutes, delay);

@@ -906,23 +906,10 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
 
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const chromiumOptions = {
-            headless: true,
-            args: [
-              "--no-sandbox",
-              "--disable-setuid-sandbox",
-              "--disable-dev-shm-usage",
-              "--disable-gpu",
-              "--disable-extensions",
-              "--font-render-hinting=none",
-            ],
-          };
-
           const composition = await selectComposition({
             serveUrl: bundlePath,
             id: clipId,
             inputProps: {},
-            chromiumOptions,
           });
 
           await renderMedia({
@@ -932,11 +919,10 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
             outputLocation: clipVideoPath,
             inputProps: {},
             muted: true, // audio added by FFmpeg below
-            concurrency: 2,
+            concurrency: attempt >= 1 ? 2 : 4, // reduce concurrency on retry
             logLevel: "warn",
             timeoutInMilliseconds: 600000, // 10 min per clip
             overwrite: true,
-            chromiumOptions,
           });
 
           renderSuccess = true;

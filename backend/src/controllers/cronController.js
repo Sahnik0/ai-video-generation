@@ -49,7 +49,8 @@ const createCronJob = async (req, res) => {
       schedule, 
       isActive = true,
       intervalMode = false,
-      intervalMinutes = 30
+      intervalMinutes = 30,
+      rapid = false
     } = req.body;
     
     if (!topic) {
@@ -59,11 +60,13 @@ const createCronJob = async (req, res) => {
     let nextRun;
     
     if (intervalMode) {
-      // For interval mode, validate interval minutes
-      if (!intervalMinutes || intervalMinutes < 1) {
-        return res.status(400).json({ error: "Invalid interval minutes" });
+      // For interval mode, validate interval minutes unless rapid
+      if (!rapid) {
+        if (!intervalMinutes || intervalMinutes < 1) {
+          return res.status(400).json({ error: "Invalid interval minutes" });
+        }
       }
-      const firstRun = await computeIntervalStart(intervalMinutes);
+      const firstRun = rapid ? new Date() : await computeIntervalStart(intervalMinutes);
       nextRun = firstRun;
     } else {
       // For traditional cron mode
@@ -86,6 +89,7 @@ const createCronJob = async (req, res) => {
       isActive,
       intervalMode,
       intervalMinutes: intervalMode ? intervalMinutes : 30,
+      rapid: intervalMode ? rapid : false,
       nextRun,
       status: "pending"
     });
@@ -93,7 +97,7 @@ const createCronJob = async (req, res) => {
     // Schedule the job if active
     if (isActive) {
       if (intervalMode) {
-        const startDelayMs = Math.max(0, nextRun.getTime() - Date.now());
+        const startDelayMs = rapid ? 0 : Math.max(0, nextRun.getTime() - Date.now());
         scheduleIntervalJob(job._id.toString(), intervalMinutes, startDelayMs);
       } else {
         scheduleJob(job._id.toString(), schedule);
@@ -118,7 +122,7 @@ const updateCronJob = async (req, res) => {
       return res.status(404).json({ error: "Cron job not found" });
     }
     
-    const { topic, language, mode, schedule, isActive } = req.body;
+    const { topic, language, mode, schedule, isActive, rapid } = req.body;
     
     // Validate schedule if provided
     if (schedule && !isValidCronExpression(schedule)) {
@@ -144,12 +148,15 @@ const updateCronJob = async (req, res) => {
     
     if (job.isActive) {
       if (job.intervalMode) {
-        const startAt = job.nextRun && job.nextRun > new Date()
-          ? new Date(job.nextRun)
-          : await computeIntervalStart(job.intervalMinutes, jobId);
+        const startAt = (rapid || job.rapid)
+          ? new Date()
+          : (job.nextRun && job.nextRun > new Date()
+              ? new Date(job.nextRun)
+              : await computeIntervalStart(job.intervalMinutes, jobId));
         job.nextRun = startAt;
+        if (rapid !== undefined) job.rapid = rapid;
         await job.save();
-        const startDelayMs = Math.max(0, startAt.getTime() - Date.now());
+        const startDelayMs = (rapid || job.rapid) ? 0 : Math.max(0, startAt.getTime() - Date.now());
         scheduleIntervalJob(jobId, job.intervalMinutes, startDelayMs);
       } else {
         scheduleJob(jobId, job.schedule);
@@ -207,12 +214,14 @@ const toggleCronJob = async (req, res) => {
     
     if (job.isActive) {
       if (job.intervalMode) {
-        const startAt = job.nextRun && job.nextRun > new Date()
-          ? new Date(job.nextRun)
-          : await computeIntervalStart(job.intervalMinutes, jobId);
+        const startAt = job.rapid
+          ? new Date()
+          : (job.nextRun && job.nextRun > new Date()
+              ? new Date(job.nextRun)
+              : await computeIntervalStart(job.intervalMinutes, jobId));
         job.nextRun = startAt;
         await job.save();
-        const startDelayMs = Math.max(0, startAt.getTime() - Date.now());
+        const startDelayMs = job.rapid ? 0 : Math.max(0, startAt.getTime() - Date.now());
         scheduleIntervalJob(jobId, job.intervalMinutes, startDelayMs);
       } else {
         scheduleJob(jobId, job.schedule);
