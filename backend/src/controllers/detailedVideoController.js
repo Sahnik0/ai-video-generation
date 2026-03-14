@@ -49,8 +49,14 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN") => {
     }
 
     const rawScript = await generateScript(topic, language);
-    const sections = trimSectionsToWordLimit(rawScript.sections, 300);
+    const baseSections = trimSectionsToWordLimit(rawScript.sections, 300);
     const title = rawScript.title || topic;
+    const greeting = {
+      heading: "Welcome",
+      script: `Hi there! I'm excited to learn with you. Let’s explore ${topic} together.`,
+      keywords: ["greeting", "welcome"]
+    };
+    const sections = [greeting, ...baseSections];
 
     jobTempDir = path.join(tempDir, `detailed_${topicHash}_${Date.now()}`);
     await ensureDir(jobTempDir);

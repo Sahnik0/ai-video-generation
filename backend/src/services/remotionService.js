@@ -19,10 +19,35 @@ const esbuild = require("esbuild");
 const os = require("os");
 
 const REMOTION_DIR = path.resolve(__dirname, "../../remotion");
-const SCENES_DIR = path.join(REMOTION_DIR, "src", "scenes");
-const ROOT_FILE = path.join(REMOTION_DIR, "src", "Root.jsx");
-const ENTRY_POINT = path.join(REMOTION_DIR, "src", "index.jsx");
+const TEMPLATE_ENTRY = path.join(REMOTION_DIR, "src", "index.jsx");
 const FPS = 30;
+const RENDER_CONCURRENCY = Math.max(2, Math.min(8, os.cpus().length || 4));
+
+async function createRemotionWorkspace(baseTempDir) {
+  const remotionDir = path.join(baseTempDir, "remotion-workdir");
+  const srcDir = path.join(remotionDir, "src");
+  const scenesDir = path.join(srcDir, "scenes");
+  const rootFile = path.join(srcDir, "Root.jsx");
+  const entryPoint = path.join(srcDir, "index.jsx");
+
+  await fs.mkdir(scenesDir, { recursive: true });
+
+  // Seed index.jsx (registerRoot) from template or fallback
+  try {
+    if (existsSync(TEMPLATE_ENTRY)) {
+      const tpl = await fs.readFile(TEMPLATE_ENTRY, "utf8");
+      await fs.writeFile(entryPoint, tpl, "utf8");
+    } else {
+      const fallbackIdx = "import { registerRoot } from 'remotion';\nimport { RemotionRoot } from './Root';\nregisterRoot(RemotionRoot);\n";
+      await fs.writeFile(entryPoint, fallbackIdx, "utf8");
+    }
+  } catch (err) {
+    const fallbackIdx = "import { registerRoot } from 'remotion';\nimport { RemotionRoot } from './Root';\nregisterRoot(RemotionRoot);\n";
+    await fs.writeFile(entryPoint, fallbackIdx, "utf8");
+  }
+
+  return { remotionDir, srcDir, scenesDir, rootFile, entryPoint };
+}
 
 // Gemini Flash for rescue scene generation (lightweight, fast)
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -82,33 +107,6 @@ function sanitizeRemotionImports(code) {
       return `import { ${cleaned.join(', ')} } from 'remotion';`;
     }
   );
-}
-
-// ─── Simple async mutex ────────────────────────────────────────────────────────
-// Remotion bundling modifies shared files, so only one detailed render at a time.
-
-let lockQueue = [];
-let isLocked = false;
-
-function acquireRenderLock() {
-  return new Promise((resolve) => {
-    if (!isLocked) {
-      isLocked = true;
-      resolve();
-    } else {
-      console.log("[remotion] waiting for render lock...");
-      lockQueue.push(resolve);
-    }
-  });
-}
-
-function releaseRenderLock() {
-  if (lockQueue.length > 0) {
-    const next = lockQueue.shift();
-    next();
-  } else {
-    isLocked = false;
-  }
 }
 
 // ─── FFmpeg helpers ────────────────────────────────────────────────────────────
@@ -194,8 +192,9 @@ async function concatClips(clipPaths, outputPath, tempDir) {
  *  6  Assign the IIFE result to `const _SceneInner${i}`.
  *  7  Append an error-boundary class that exports as `Scene${i}`.
  */
-async function writeSceneFiles(sceneDataArray, sectionScripts) {
-  await fs.mkdir(SCENES_DIR, { recursive: true });
+async function writeSceneFiles(sceneDataArray, sectionScripts, paths) {
+  const { scenesDir } = paths;
+  await fs.mkdir(scenesDir, { recursive: true });
 
   for (const { sectionIndex, code: rawCode, durationInFrames } of sceneDataArray) {
     const inner = `_SceneInner${sectionIndex}`;
@@ -314,7 +313,7 @@ export default ${cls};
 `;
 
     await fs.writeFile(
-      path.join(SCENES_DIR, `Scene${sectionIndex}.jsx`),
+      path.join(scenesDir, `Scene${sectionIndex}.jsx`),
       wrappedCode,
       "utf8"
     );
@@ -322,13 +321,13 @@ export default ${cls};
     // ── 6. Pre-validate with esbuild transform ─────────────────────────────
     // If the AI wrote syntactically invalid JSX, esbuild transform will catch
     // it here BEFORE we try to bundle everything (which would crash all scenes).
-    const scenePath = path.join(SCENES_DIR, `Scene${sectionIndex}.jsx`);
+    const scenePath = path.join(scenesDir, `Scene${sectionIndex}.jsx`);
     const syntaxError = await validateJsx(scenePath);
     if (syntaxError) {
       console.warn(`[remotion] scene ${sectionIndex} has syntax error: ${syntaxError}`);
       console.warn(`[remotion] replacing scene ${sectionIndex} with fallback`);
       const fallbackText = (sectionScripts && sectionScripts[sectionIndex]) || `Scene ${sectionIndex}`;
-      await replaceWithFallback(sectionIndex, fallbackText, durationInFrames || 150);
+      await replaceWithFallback(sectionIndex, fallbackText, durationInFrames || 150, paths);
     }
   }
 }
@@ -359,7 +358,8 @@ async function validateJsx(filePath) {
  * Generate Root.jsx with one Composition per section.
  * Each composition uses the corresponding Scene component.
  */
-async function writeRootJsx(sceneDataArray) {
+async function writeRootJsx(sceneDataArray, paths) {
+  const { rootFile } = paths;
   const importLines = sceneDataArray
     .map(({ sectionIndex }) => `import { Scene${sectionIndex} } from './scenes/Scene${sectionIndex}';`)
     .join("\n");
@@ -390,19 +390,20 @@ export const RemotionRoot = () => (
 );
 `;
 
-  await fs.writeFile(ROOT_FILE, rootContent, "utf8");
+  await fs.writeFile(rootFile, rootContent, "utf8");
 }
 
 /**
  * Replace a failed scene by trying AI rescue first, then falling back to
  * a truly minimal text-only scene as the nuclear option.
  */
-async function replaceWithFallback(sectionIndex, sectionText, durationInFrames) {
+async function replaceWithFallback(sectionIndex, sectionText, durationInFrames, paths) {
+  const { scenesDir } = paths;
   // Try AI rescue first — ask Flash for a simple contextual scene
   try {
     const rescueCode = await generateRescueFallback(sectionIndex, sectionText, durationInFrames);
     if (rescueCode) {
-      const scenePath = path.join(SCENES_DIR, `Scene${sectionIndex}.jsx`);
+        const scenePath = path.join(scenesDir, `Scene${sectionIndex}.jsx`);
       await fs.writeFile(scenePath, rescueCode, "utf8");
       // Validate rescue code too — AI rescue can also produce broken syntax
       const rescueError = await validateJsx(scenePath);
@@ -484,7 +485,7 @@ export const Scene${sectionIndex} = () => {
 export default Scene${sectionIndex};
 `;
 
-  await fs.writeFile(path.join(SCENES_DIR, `Scene${sectionIndex}.jsx`), fallback, "utf8");
+  await fs.writeFile(path.join(scenesDir, `Scene${sectionIndex}.jsx`), fallback, "utf8");
   console.log(`[remotion] scene ${sectionIndex} replaced with minimal fallback`);
 }
 
@@ -642,7 +643,7 @@ Return ONLY the fixed JSX code. No markdown fences. No explanation.`;
  *
  * Returns the (possibly updated) bundle path.
  */
-async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tempDir) {
+async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tempDir, paths) {
   const MAX_FIX_ROUNDS = 2;
   let currentBundle = bundlePath;
   let scenesToCheck = sceneDataArray.map(s => s.sectionIndex);
@@ -753,7 +754,8 @@ async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tem
           // Re-process through full writeSceneFiles pipeline (sanitize → wrap → esbuild check)
           await writeSceneFiles(
             [{ sectionIndex, code: fixedCode, durationInFrames: sceneData.durationInFrames }],
-            sectionScripts
+            sectionScripts,
+            paths
           );
           // Update sceneData.code so the NEXT round fixes the already-improved code,
           // not the original broken version (this was a critical bug — round 2 was
@@ -763,12 +765,12 @@ async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tem
           anyFixed = true;
         } else {
           console.warn(`[compiler] AI fix for scene ${sectionIndex} returned empty — using rescue fallback`);
-          await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], sceneData.durationInFrames);
+          await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], sceneData.durationInFrames, paths);
           anyFixed = true;
         }
       } catch (fixErr) {
         console.warn(`[compiler] AI fix for scene ${sectionIndex} threw: ${fixErr.message}`);
-        await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], sceneData.durationInFrames);
+        await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], sceneData.durationInFrames, paths);
         anyFixed = true;
       }
     }
@@ -778,8 +780,8 @@ async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tem
       console.log("[compiler] 📦 Re-bundling after fixes...");
       try { await fs.rm(currentBundle, { recursive: true, force: true }); } catch (_) {}
       currentBundle = await bundle({
-        entryPoint: ENTRY_POINT,
-        rootDir: REMOTION_DIR,
+        entryPoint: paths.entryPoint,
+        rootDir: paths.remotionDir,
         enableCaching: false,
         webpackOverride: (config) => config,
       });
@@ -834,7 +836,7 @@ async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tem
     if (errors.length > 0) {
       console.warn(`[compiler] Scene ${idx} still broken after all fix rounds — replacing with rescue fallback`);
       finalFailures.push(idx);
-      await replaceWithFallback(idx, sectionScripts[idx], sceneData.durationInFrames);
+      await replaceWithFallback(idx, sectionScripts[idx], sceneData.durationInFrames, paths);
     } else {
       console.log(`[compiler] ✅ Scene ${idx} passed final validation`);
     }
@@ -845,8 +847,8 @@ async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tem
     console.log(`[compiler] 📦 Final re-bundle after replacing ${finalFailures.length} persistent failure(s)...`);
     try { await fs.rm(currentBundle, { recursive: true, force: true }); } catch (_) {}
     currentBundle = await bundle({
-      entryPoint: ENTRY_POINT,
-      rootDir: REMOTION_DIR,
+      entryPoint: paths.entryPoint,
+      rootDir: paths.remotionDir,
       enableCaching: false,
       webpackOverride: (config) => config,
     });
@@ -871,26 +873,26 @@ async function preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tem
  * @param {string}   opts.tempDir         - temp directory for intermediate files
  */
 async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts, outputPath, tempDir }) {
-  await acquireRenderLock();
+  const paths = await createRemotionWorkspace(tempDir || os.tmpdir());
   let bundlePath = null;
 
   try {
     console.log("[remotion] writing scene files...");
-    await writeSceneFiles(sceneDataArray, sectionScripts);
-    await writeRootJsx(sceneDataArray);
+    await writeSceneFiles(sceneDataArray, sectionScripts, paths);
+    await writeRootJsx(sceneDataArray, paths);
 
     // ── Bundle ──────────────────────────────────────────────────────────────
     console.log("[remotion] bundling (this takes ~30-60s on first run)...");
     bundlePath = await bundle({
-      entryPoint: ENTRY_POINT,
-      rootDir: REMOTION_DIR,
+      entryPoint: paths.entryPoint,
+      rootDir: paths.remotionDir,
       enableCaching: false, // always fresh for dynamic code
       webpackOverride: (config) => config,
     });
     console.log(`[remotion] bundle ready: ${bundlePath}`);
 
     // ── Pre-render scene compiler: validate each scene with test frames ─────
-    bundlePath = await preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tempDir);
+    bundlePath = await preValidateScenes(bundlePath, sceneDataArray, sectionScripts, tempDir, paths);
 
     // ── Render each clip ────────────────────────────────────────────────────
     const muxedClipPaths = [];
@@ -906,10 +908,23 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
 
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
+          const chromiumOptions = {
+            headless: true,
+            args: [
+              "--no-sandbox",
+              "--disable-setuid-sandbox",
+              "--disable-dev-shm-usage",
+              "--disable-gpu",
+              "--disable-extensions",
+              "--font-render-hinting=none",
+            ],
+          };
+
           const composition = await selectComposition({
             serveUrl: bundlePath,
             id: clipId,
             inputProps: {},
+            chromiumOptions,
           });
 
           await renderMedia({
@@ -919,10 +934,11 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
             outputLocation: clipVideoPath,
             inputProps: {},
             muted: true, // audio added by FFmpeg below
-            concurrency: attempt >= 1 ? 2 : 4, // reduce concurrency on retry
+            concurrency: attempt >= 1 ? Math.max(2, Math.floor(RENDER_CONCURRENCY / 2)) : RENDER_CONCURRENCY,
             logLevel: "warn",
             timeoutInMilliseconds: 600000, // 10 min per clip
             overwrite: true,
+            chromiumOptions,
           });
 
           renderSuccess = true;
@@ -938,14 +954,14 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
           } else if (attempt <= 1) {
             // Persistent failure — replace with fallback scene and re-bundle
             console.log(`[remotion] swapping scene ${sectionIndex} for fallback and re-bundling`);
-            await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], durationInFrames);
-            await writeRootJsx(sceneDataArray);
+            await replaceWithFallback(sectionIndex, sectionScripts[sectionIndex], durationInFrames, paths);
+            await writeRootJsx(sceneDataArray, paths);
             if (bundlePath) {
               try { await fs.rm(bundlePath, { recursive: true, force: true }); } catch (_) {}
             }
             bundlePath = await bundle({
-              entryPoint: ENTRY_POINT,
-              rootDir: REMOTION_DIR,
+              entryPoint: paths.entryPoint,
+              rootDir: paths.remotionDir,
               enableCaching: false,
               webpackOverride: (config) => config,
             });
@@ -975,8 +991,6 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
     console.log("[remotion] 🎬 detailed video render complete!");
 
   } finally {
-    releaseRenderLock();
-
     // Clean up bundle dir (can be large)
     if (bundlePath) {
       fs.rm(bundlePath, { recursive: true, force: true }).catch(() => {});
@@ -984,9 +998,9 @@ async function renderDetailedVideo({ sceneDataArray, audioFiles, sectionScripts,
 
     // Clean up generated scene source files
     try {
-      const files = await fs.readdir(SCENES_DIR);
+      const files = await fs.readdir(paths.scenesDir);
       for (const f of files) {
-        await fs.unlink(path.join(SCENES_DIR, f)).catch(() => {});
+        await fs.unlink(path.join(paths.scenesDir, f)).catch(() => {});
       }
     } catch (_) {}
 
@@ -1007,7 +1021,7 @@ export const RemotionRoot = () => (
   </>
 );
 `;
-    fs.writeFile(ROOT_FILE, defaultRoot, "utf8").catch(() => {});
+    fs.writeFile(paths.rootFile, defaultRoot, "utf8").catch(() => {});
   }
 }
 

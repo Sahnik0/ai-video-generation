@@ -61,7 +61,12 @@ const generateVideoForCron = async (topic, language = "en-IN") => {
     });
 
     const aiResponse = await generateScript(topic, language);
-    const sections = trimSectionsToWordLimit(aiResponse.sections, 300);
+    const baseSections = trimSectionsToWordLimit(aiResponse.sections, 300);
+    const greeting = `Hi there! I'm excited to learn with you. Let’s explore ${topic} together.`;
+    const sections = [
+      { heading: "Welcome", script: greeting, keywords: ["greeting", "welcome"] },
+      ...baseSections
+    ];
     jobTempDir = path.join(tempDir, `generic_${topicHash}_${Date.now()}`);
     const topicImagesDir = path.join(jobTempDir, "images");
     await ensureDir(topicImagesDir);
