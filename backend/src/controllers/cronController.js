@@ -7,6 +7,8 @@
 const CronJob = require("../models/CronJob");
 const { scheduleJob, scheduleIntervalJob, cancelJob, isValidCronExpression, calculateNextRun, executeJob, computeIntervalStart } = require("../services/cronService");
 
+const YOUTUBE_UPLOAD_LOCKED = true;
+
 /**
  * GET /api/cron - List all cron jobs
  */
@@ -50,23 +52,28 @@ const createCronJob = async (req, res) => {
       isActive = true,
       intervalMode = false,
       intervalMinutes = 30,
-      rapid = false
+      uploadTarget = "s3"
     } = req.body;
     
     if (!topic) {
       return res.status(400).json({ error: "Topic is required" });
     }
     
+    if (!["s3", "youtube"].includes(uploadTarget)) {
+      return res.status(400).json({ error: "Invalid upload target" });
+    }
+    if (uploadTarget === "youtube" && YOUTUBE_UPLOAD_LOCKED) {
+      return res.status(403).json({ error: "YouTube upload is currently locked" });
+    }
+
     let nextRun;
     
     if (intervalMode) {
-      // For interval mode, validate interval minutes unless rapid
-      if (!rapid) {
-        if (!intervalMinutes || intervalMinutes < 1) {
-          return res.status(400).json({ error: "Invalid interval minutes" });
-        }
+      // For interval mode, validate interval minutes
+      if (!intervalMinutes || intervalMinutes < 1) {
+        return res.status(400).json({ error: "Invalid interval minutes" });
       }
-      const firstRun = rapid ? new Date() : await computeIntervalStart(intervalMinutes);
+      const firstRun = await computeIntervalStart(intervalMinutes);
       nextRun = firstRun;
     } else {
       // For traditional cron mode
@@ -89,7 +96,7 @@ const createCronJob = async (req, res) => {
       isActive,
       intervalMode,
       intervalMinutes: intervalMode ? intervalMinutes : 30,
-      rapid: intervalMode ? rapid : false,
+      uploadTarget,
       nextRun,
       status: "pending"
     });
@@ -97,7 +104,7 @@ const createCronJob = async (req, res) => {
     // Schedule the job if active
     if (isActive) {
       if (intervalMode) {
-        const startDelayMs = rapid ? 0 : Math.max(0, nextRun.getTime() - Date.now());
+        const startDelayMs = Math.max(0, nextRun.getTime() - Date.now());
         scheduleIntervalJob(job._id.toString(), intervalMinutes, startDelayMs);
       } else {
         scheduleJob(job._id.toString(), schedule);
@@ -122,7 +129,7 @@ const updateCronJob = async (req, res) => {
       return res.status(404).json({ error: "Cron job not found" });
     }
     
-    const { topic, language, mode, schedule, isActive, rapid } = req.body;
+    const { topic, language, mode, schedule, isActive, uploadTarget } = req.body;
     
     // Validate schedule if provided
     if (schedule && !isValidCronExpression(schedule)) {
@@ -133,6 +140,15 @@ const updateCronJob = async (req, res) => {
     if (topic !== undefined) job.topic = topic;
     if (language !== undefined) job.language = language;
     if (mode !== undefined) job.mode = mode;
+    if (uploadTarget !== undefined) {
+      if (!["s3", "youtube"].includes(uploadTarget)) {
+        return res.status(400).json({ error: "Invalid upload target" });
+      }
+      if (uploadTarget === "youtube" && YOUTUBE_UPLOAD_LOCKED) {
+        return res.status(403).json({ error: "YouTube upload is currently locked" });
+      }
+      job.uploadTarget = uploadTarget;
+    }
     if (schedule !== undefined) {
       job.schedule = schedule;
       job.nextRun = calculateNextRun(schedule);
@@ -148,15 +164,12 @@ const updateCronJob = async (req, res) => {
     
     if (job.isActive) {
       if (job.intervalMode) {
-        const startAt = (rapid || job.rapid)
-          ? new Date()
-          : (job.nextRun && job.nextRun > new Date()
-              ? new Date(job.nextRun)
-              : await computeIntervalStart(job.intervalMinutes, jobId));
+        const startAt = job.nextRun && job.nextRun > new Date()
+          ? new Date(job.nextRun)
+          : await computeIntervalStart(job.intervalMinutes, jobId);
         job.nextRun = startAt;
-        if (rapid !== undefined) job.rapid = rapid;
         await job.save();
-        const startDelayMs = (rapid || job.rapid) ? 0 : Math.max(0, startAt.getTime() - Date.now());
+        const startDelayMs = Math.max(0, startAt.getTime() - Date.now());
         scheduleIntervalJob(jobId, job.intervalMinutes, startDelayMs);
       } else {
         scheduleJob(jobId, job.schedule);
@@ -214,14 +227,12 @@ const toggleCronJob = async (req, res) => {
     
     if (job.isActive) {
       if (job.intervalMode) {
-        const startAt = job.rapid
-          ? new Date()
-          : (job.nextRun && job.nextRun > new Date()
-              ? new Date(job.nextRun)
-              : await computeIntervalStart(job.intervalMinutes, jobId));
+        const startAt = job.nextRun && job.nextRun > new Date()
+          ? new Date(job.nextRun)
+          : await computeIntervalStart(job.intervalMinutes, jobId);
         job.nextRun = startAt;
         await job.save();
-        const startDelayMs = job.rapid ? 0 : Math.max(0, startAt.getTime() - Date.now());
+        const startDelayMs = Math.max(0, startAt.getTime() - Date.now());
         scheduleIntervalJob(jobId, job.intervalMinutes, startDelayMs);
       } else {
         scheduleJob(jobId, job.schedule);

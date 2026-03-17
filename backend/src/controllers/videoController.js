@@ -9,6 +9,7 @@ const { orchestrate, tweakScript, buildSyncPlan } = require("../services/aiAgent
 const { generatePerImageAudio, generateSectionAudio } = require("../services/ttsService");
 const { renderSyncedVideo } = require("../services/ffmpegService");
 const { uploadToYouTube } = require("../services/youtubeService");
+const { uploadToS3 } = require("../services/s3Service");
 
 const tempDir = path.resolve(__dirname, "../../tmp");
 
@@ -20,7 +21,8 @@ const listVideos = async (req, res) => {
     topic: video.topic,
     createdAt: video.createdAt,
     mode: video.mode || "generic",
-    videoUrl: video.youtubeUrl || null,
+    uploadTarget: video.uploadTarget || "s3",
+    videoUrl: video.s3Url || video.youtubeUrl || null,
     youtubeVideoId: video.youtubeVideoId || null
   }));
   return res.json({ items });
@@ -29,7 +31,7 @@ const listVideos = async (req, res) => {
 /**
  * Generate video for cron job (no HTTP response)
  */
-const generateVideoForCron = async (topic, language = "en-IN") => {
+const generateVideoForCron = async (topic, language = "en-IN", uploadTarget = "s3") => {
   let jobTempDir = null;
   let audioPath = null;
   let videoPath = null;
@@ -39,15 +41,17 @@ const generateVideoForCron = async (topic, language = "en-IN") => {
     console.log(`[video-cron] start topicHash=${topicHash} language=${language}`);
 
     // Check cache
-    const cached = await Video.findOne({ topicHash, status: "completed" });
-    if (cached && cached.youtubeUrl) {
-      console.log(`[video-cron] cache hit, returning existing: ${cached.youtubeUrl}`);
+    const cached = await Video.findOne({ topicHash, status: "completed", uploadTarget });
+    const cachedUrl = cached ? (cached.s3Url || cached.youtubeUrl) : null;
+    if (cached && cachedUrl) {
+      console.log(`[video-cron] cache hit, returning existing: ${cachedUrl}`);
       return {
         videoId: cached._id.toString(),
-        youtubeUrl: cached.youtubeUrl,
+        videoUrl: cachedUrl,
         youtubeVideoId: cached.youtubeVideoId,
         title: cached.title,
         topic: cached.topic,
+        uploadTarget: cached.uploadTarget || uploadTarget,
         cached: true
       };
     }
@@ -57,6 +61,7 @@ const generateVideoForCron = async (topic, language = "en-IN") => {
       topicHash,
       status: "generating",
       language,
+      uploadTarget,
       createdAt: new Date()
     });
 
@@ -100,34 +105,51 @@ const generateVideoForCron = async (topic, language = "en-IN") => {
     const syncPlan = buildSyncPlan(tweakedSections, sectionImages, perImageAudios);
     await renderSyncedVideo({ syncPlan, audioPath, outputPath: videoPath });
 
-    // Upload to YouTube
-    const youtubeResult = await uploadToYouTube(videoPath, {
-      title: aiResponse.title || topic,
-      description: `Auto-generated video about: ${topic}\n\nLanguage: ${language}`,
-      tags: sections.flatMap(s => s.keywords).slice(0, 10),
-      categoryId: "27",
-      privacyStatus: "unlisted"
-    });
+    let videoUrl;
+    let youtubeResult = null;
+    let s3Result = null;
+    if (uploadTarget === "youtube") {
+      youtubeResult = await uploadToYouTube(videoPath, {
+        title: aiResponse.title || topic,
+        description: `Auto-generated video about: ${topic}\n\nLanguage: ${language}`,
+        tags: sections.flatMap(s => s.keywords).slice(0, 10),
+        categoryId: "27",
+        privacyStatus: "unlisted"
+      });
+      videoUrl = youtubeResult.videoUrl;
+    } else {
+      s3Result = await uploadToS3(videoPath, {
+        title: aiResponse.title || topic,
+        topic,
+        language
+      });
+      videoUrl = s3Result.videoUrl;
+    }
 
     // Update record
     record.title = aiResponse.title;
     record.script = tweakedSections.map((s) => s.script).join(" ");
     record.sections = sections;
-    record.youtubeVideoId = youtubeResult.videoId;
-    record.youtubeUrl = youtubeResult.videoUrl;
-    record.youtubeUploadedAt = new Date();
+    record.youtubeVideoId = youtubeResult ? youtubeResult.videoId : undefined;
+    record.youtubeUrl = youtubeResult ? youtubeResult.videoUrl : undefined;
+    record.youtubeUploadedAt = youtubeResult ? new Date() : undefined;
+    record.s3Key = s3Result ? s3Result.key : undefined;
+    record.s3Url = s3Result ? s3Result.videoUrl : undefined;
+    record.s3UploadedAt = s3Result ? new Date() : undefined;
+    record.uploadTarget = uploadTarget;
     record.status = "completed";
     record.generatedAt = new Date();
     await record.save();
 
-    console.log(`[video-cron] completed: ${youtubeResult.videoUrl}`);
+    console.log(`[video-cron] completed: ${videoUrl}`);
 
     return {
       videoId: record._id.toString(),
-      youtubeUrl: youtubeResult.videoUrl,
-      youtubeVideoId: youtubeResult.videoId,
+      videoUrl,
+      youtubeVideoId: youtubeResult ? youtubeResult.videoId : null,
       title: record.title,
       topic: record.topic,
+      uploadTarget,
       cached: false
     };
   } catch (error) {

@@ -12,6 +12,7 @@ type VideoItem = {
   createdAt: string;
   videoUrl: string | null;
   youtubeVideoId?: string;
+  uploadTarget?: "s3" | "youtube";
   mode?: "generic" | "detailed";
 };
 
@@ -132,7 +133,7 @@ export default function Home() {
                       rel="noopener noreferrer"
                       className="btn btn-primary px-6 h-10"
                     >
-                      Watch on YouTube
+                      {currentVideo.uploadTarget === "youtube" ? "Watch on YouTube" : "Open Video"}
                     </a>
                     <button
                       onClick={() => {

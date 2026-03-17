@@ -11,9 +11,10 @@ type CronJob = {
   isActive: boolean;
   intervalMode?: boolean;
   intervalMinutes?: number;
-  rapid?: boolean;
+  uploadTarget?: "s3" | "youtube";
   lastRun?: string;
   nextRun?: string;
+  lastVideoUrl?: string;
   lastYouTubeUrl?: string;
   status: "pending" | "running" | "completed" | "failed";
   errorMessage?: string;
@@ -59,7 +60,8 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
   const [scheduleMode, setScheduleMode] = useState<"cron" | "interval">("interval");
   const [selectedPreset, setSelectedPreset] = useState("0 9 * * *");
   const [customSchedule, setCustomSchedule] = useState("");
-  const [intervalMinutes, setIntervalMinutes] = useState<number | "rapid">(30);
+  const [intervalMinutes, setIntervalMinutes] = useState<number>(30);
+  const [uploadTarget, setUploadTarget] = useState<"s3" | "youtube">("s3");
 
   const loadJobs = async () => {
     try {
@@ -118,16 +120,15 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
         topic: newTopic,
         language: newLanguage,
         mode: newMode,
+        uploadTarget,
         isActive: true,
       };
 
       if (scheduleMode === "interval") {
-        const rapid = intervalMinutes === "rapid";
         Object.assign(requestBody, {
           intervalMode: true,
-          intervalMinutes: rapid ? 0 : intervalMinutes,
-          rapid,
-          schedule: rapid ? "rapid" : "interval"
+          intervalMinutes,
+          schedule: "interval"
         });
       } else {
         Object.assign(requestBody, {
@@ -146,6 +147,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
       if (response.ok && data.success) {
         addNotification("Cron job created successfully!", "success");
         setNewTopic("");
+        setUploadTarget("s3");
         setShowCreateForm(false);
         await loadJobs();
       } else {
@@ -247,6 +249,37 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
           {/* Schedule Mode Toggle */}
           <div>
             <label className="block text-sm font-medium text-foreground mb-2">
+              Upload Destination
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setUploadTarget("s3")}
+                className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                  uploadTarget === "s3"
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
+                }`}
+              >
+                S3 Upload
+              </button>
+              <button
+                type="button"
+                disabled
+                className="px-4 py-2.5 rounded-lg text-sm font-medium bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400 cursor-not-allowed"
+                title="YouTube upload is locked for now"
+              >
+                YouTube (Locked)
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              New jobs will upload to S3. YouTube is currently disabled.
+            </p>
+          </div>
+
+          {/* Schedule Mode Toggle */}
+          <div>
+            <label className="block text-sm font-medium text-foreground mb-2">
               Schedule Type
             </label>
             <div className="grid grid-cols-2 gap-2">
@@ -283,12 +316,8 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
               <select
                 className="input"
                 value={intervalMinutes}
-                onChange={(e) => {
-                  const val = e.target.value === "rapid" ? "rapid" : Number(e.target.value);
-                  setIntervalMinutes(val);
-                }}
+                onChange={(e) => setIntervalMinutes(Number(e.target.value))}
               >
-                <option value="rapid">⚡ Rapid (parallel now)</option>
                 <option value={30}>Every 30 minutes</option>
                 <option value={60}>Every 1 hour</option>
                 <option value={120}>Every 2 hours</option>
@@ -296,9 +325,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                 <option value={360}>Every 6 hours</option>
               </select>
               <p className="text-xs text-muted-foreground mt-2">
-                {intervalMinutes === "rapid"
-                  ? "Runs all queued videos in parallel immediately."
-                  : `⚡ First video uploads immediately, then repeats every ${intervalMinutes} minutes`}
+                {`⚡ First video uploads immediately, then repeats every ${intervalMinutes} minutes`}
               </p>
             </div>
           ) : (
@@ -354,9 +381,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                     <span className="badge badge-primary">{job.mode}</span>
                     {job.intervalMode ? (
                       <span className="text-xs text-muted-foreground">
-                        {job.rapid
-                          ? "⚡ Rapid · Running now"
-                          : `⏱️ Every ${job.intervalMinutes} min · Next in ${formatCountdown(job.nextRun)}`}
+                        {`⏱️ Every ${job.intervalMinutes} min · Next in ${formatCountdown(job.nextRun)}`}
                       </span>
                     ) : (
                       <span className="text-xs text-muted-foreground">
@@ -364,14 +389,14 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                       </span>
                     )}
                   </div>
-                  {job.lastYouTubeUrl && (
+                  {(job.lastVideoUrl || job.lastYouTubeUrl) && (
                     <a
-                      href={job.lastYouTubeUrl}
+                      href={job.lastVideoUrl || job.lastYouTubeUrl}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-xs text-primary hover:underline mt-2 inline-block"
                     >
-                      View last video →
+                      View last uploaded video →
                     </a>
                   )}
                   {job.status === "failed" && job.errorMessage && (
@@ -382,7 +407,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                 </div>
 
                 <div className="flex gap-2 flex-shrink-0">
-                  {job.status === "completed" && job.lastYouTubeUrl ? (
+                  {job.status === "completed" && (job.lastVideoUrl || job.lastYouTubeUrl) ? (
                     <span className="px-3 py-1.5 text-xs font-medium rounded-lg bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
                       Successfully Uploaded
                     </span>

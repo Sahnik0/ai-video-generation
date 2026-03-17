@@ -77,20 +77,21 @@ const executeJob = async (jobId) => {
     // Generate video based on mode
     let result;
     if (job.mode === "detailed") {
-      result = await generateDetailedVideoForCron(job.topic, job.language);
+      result = await generateDetailedVideoForCron(job.topic, job.language, job.uploadTarget || "s3");
     } else {
-      result = await generateVideoForCron(job.topic, job.language);
+      result = await generateVideoForCron(job.topic, job.language, job.uploadTarget || "s3");
     }
     
     // Update job with results
     job.status = "completed";
     job.lastVideoId = result.videoId;
-    job.lastYouTubeUrl = result.youtubeUrl;
+    job.lastVideoUrl = result.videoUrl;
+    job.lastYouTubeUrl = result.youtubeVideoId ? result.videoUrl : undefined;
     job.errorMessage = null;
     job.updatedAt = new Date();
     await job.save();
 
-    console.log(`[cron] job ${jobId} completed successfully. YouTube URL: ${result.youtubeUrl}`);
+    console.log(`[cron] job ${jobId} completed successfully. Video URL: ${result.videoUrl}`);
 
     // One-and-done: stop scheduling and remove the job after a successful run
     cancelJob(jobId);
@@ -209,11 +210,9 @@ const initializeCronJobs = async () => {
     for (const job of activeJobs) {
       try {
         if (job.intervalMode) {
-          const computedStart = job.rapid
-            ? new Date()
-            : (job.nextRun
-                ? new Date(job.nextRun)
-                : await computeIntervalStart(job.intervalMinutes, job._id.toString()));
+          const computedStart = job.nextRun
+            ? new Date(job.nextRun)
+            : await computeIntervalStart(job.intervalMinutes, job._id.toString());
           const delay = Math.max(0, computedStart.getTime() - Date.now());
 
           scheduleIntervalJob(job._id.toString(), job.intervalMinutes, delay);

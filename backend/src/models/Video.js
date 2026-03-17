@@ -32,6 +32,13 @@ const VideoSchema = new mongoose.Schema({
   youtubeVideoId: { type: String },
   youtubeUrl: { type: String },
   youtubeUploadedAt: { type: Date },
+
+  // S3 integration
+  s3Key: { type: String },
+  s3Url: { type: String },
+  s3UploadedAt: { type: Date },
+
+  uploadTarget: { type: String, enum: ["youtube", "s3"], default: "s3" },
   
   status: { type: String, required: true },
   language: { type: String, default: "en-IN" },

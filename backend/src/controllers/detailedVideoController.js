@@ -19,6 +19,7 @@ const { getAudioDuration } = require("../services/ffmpegService");
 const { generateScenesCode } = require("../services/detailedAgentService");
 const { renderDetailedVideo } = require("../services/remotionService");
 const { uploadToYouTube } = require("../services/youtubeService");
+const { uploadToS3 } = require("../services/s3Service");
 
 const tempDir = path.resolve(__dirname, "../../tmp");
 const MAX_VIDEO_SECONDS = 300; // 5-minute cap
@@ -26,7 +27,7 @@ const MAX_VIDEO_SECONDS = 300; // 5-minute cap
 /**
  * Generate detailed video for cron job (no HTTP response)
  */
-const generateDetailedVideoForCron = async (topic, language = "en-IN") => {
+const generateDetailedVideoForCron = async (topic, language = "en-IN", uploadTarget = "s3") => {
   let jobTempDir = null;
   let outputPath = null;
   try {
@@ -35,15 +36,17 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN") => {
     console.log(`[detailed-cron] start topicHash=${topicHash} language=${language}`);
 
     // Check cache
-    const cached = await Video.findOne({ topicHash, status: "completed" });
-    if (cached && cached.youtubeUrl) {
-      console.log(`[detailed-cron] cache hit, returning existing: ${cached.youtubeUrl}`);
+    const cached = await Video.findOne({ topicHash, status: "completed", uploadTarget });
+    const cachedUrl = cached ? (cached.s3Url || cached.youtubeUrl) : null;
+    if (cached && cachedUrl) {
+      console.log(`[detailed-cron] cache hit, returning existing: ${cachedUrl}`);
       return {
         videoId: cached._id.toString(),
-        youtubeUrl: cached.youtubeUrl,
+        videoUrl: cachedUrl,
         youtubeVideoId: cached.youtubeVideoId,
         title: cached.title,
         topic: cached.topic,
+        uploadTarget: cached.uploadTarget || uploadTarget,
         cached: true
       };
     }
@@ -102,14 +105,26 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN") => {
       tempDir: jobTempDir,
     });
 
-    // Upload to YouTube
-    const youtubeResult = await uploadToYouTube(outputPath, {
-      title: title || topic,
-      description: `Detailed animated video about: ${topic}\n\nLanguage: ${language}`,
-      tags: finalSections.flatMap(s => s.keywords || []).slice(0, 10),
-      categoryId: "27",
-      privacyStatus: "unlisted"
-    });
+    let videoUrl;
+    let youtubeResult = null;
+    let s3Result = null;
+    if (uploadTarget === "youtube") {
+      youtubeResult = await uploadToYouTube(outputPath, {
+        title: title || topic,
+        description: `Detailed animated video about: ${topic}\n\nLanguage: ${language}`,
+        tags: finalSections.flatMap(s => s.keywords || []).slice(0, 10),
+        categoryId: "27",
+        privacyStatus: "unlisted"
+      });
+      videoUrl = youtubeResult.videoUrl;
+    } else {
+      s3Result = await uploadToS3(outputPath, {
+        title: title || topic,
+        topic,
+        language
+      });
+      videoUrl = s3Result.videoUrl;
+    }
 
     // Save to DB
     const record = await Video.findOneAndUpdate(
@@ -118,9 +133,13 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN") => {
         topicHash,
         title,
         topic: normalized,
-        youtubeVideoId: youtubeResult.videoId,
-        youtubeUrl: youtubeResult.videoUrl,
-        youtubeUploadedAt: new Date(),
+        youtubeVideoId: youtubeResult ? youtubeResult.videoId : undefined,
+        youtubeUrl: youtubeResult ? youtubeResult.videoUrl : undefined,
+        youtubeUploadedAt: youtubeResult ? new Date() : undefined,
+        s3Key: s3Result ? s3Result.key : undefined,
+        s3Url: s3Result ? s3Result.videoUrl : undefined,
+        s3UploadedAt: s3Result ? new Date() : undefined,
+        uploadTarget,
         status: "completed",
         language,
         mode: "detailed",
@@ -130,14 +149,15 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN") => {
       { upsert: true, new: true }
     );
 
-    console.log(`[detailed-cron] completed: ${youtubeResult.videoUrl}`);
+    console.log(`[detailed-cron] completed: ${videoUrl}`);
 
     return {
       videoId: record._id.toString(),
-      youtubeUrl: youtubeResult.videoUrl,
-      youtubeVideoId: youtubeResult.videoId,
+      videoUrl,
+      youtubeVideoId: youtubeResult ? youtubeResult.videoId : null,
       title,
       topic: normalized,
+      uploadTarget,
       cached: false
     };
   } catch (error) {

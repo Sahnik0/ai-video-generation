@@ -17,10 +17,11 @@ const CronJobSchema = new mongoose.Schema({
   lastRun: { type: Date },
   nextRun: { type: Date },
   lastVideoId: { type: String },
+  lastVideoUrl: { type: String },
   lastYouTubeUrl: { type: String },
+  uploadTarget: { type: String, enum: ["youtube", "s3"], default: "s3" },
   status: { type: String, enum: ["pending", "running", "completed", "failed"], default: "pending" },
   errorMessage: { type: String },
-  rapid: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

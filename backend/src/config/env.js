@@ -20,6 +20,12 @@ const env = {
     clientSecret: process.env.YOUTUBE_CLIENT_SECRET || "",
     redirectUri: process.env.YOUTUBE_REDIRECT_URI || "http://localhost:4000/api/youtube/oauth2callback",
     refreshToken: process.env.YOUTUBE_REFRESH_TOKEN || ""
+  },
+  aws: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || "",
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || "",
+    region: process.env.AWS_REGION || "",
+    bucketName: process.env.AWS_BUCKET_NAME || ""
   }
 };
 
