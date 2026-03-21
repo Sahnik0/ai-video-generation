@@ -77,9 +77,19 @@ const executeJob = async (jobId) => {
     // Generate video based on mode
     let result;
     if (job.mode === "detailed") {
-      result = await generateDetailedVideoForCron(job.topic, job.language, job.uploadTarget || "s3");
+      result = await generateDetailedVideoForCron(
+        job.topic,
+        job.language,
+        job.uploadTarget || "s3",
+        { curriculumData: job.curriculumData }
+      );
     } else {
-      result = await generateVideoForCron(job.topic, job.language, job.uploadTarget || "s3");
+      result = await generateVideoForCron(
+        job.topic,
+        job.language,
+        job.uploadTarget || "s3",
+        { curriculumData: job.curriculumData }
+      );
     }
     
     // Update job with results

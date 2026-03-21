@@ -6,8 +6,29 @@
 
 const mongoose = require("mongoose");
 
+const CurriculumDataSchema = new mongoose.Schema(
+  {
+    curriculumId: { type: String, default: null },
+    curriculumName: { type: String, default: null },
+    gradeId: { type: String, default: null },
+    gradeName: { type: String, default: null },
+    subjectId: { type: String, default: null },
+    subjectName: { type: String, default: null },
+    chapterId: { type: String, default: null },
+    chapterName: { type: String, default: null },
+    topicId: { type: String, default: null },
+    topicName: { type: String, default: null },
+    subtopicId: { type: String, default: null },
+    subtopicName: { type: String, default: null },
+    conceptId: { type: String, default: null },
+    conceptName: { type: String, default: null }
+  },
+  { _id: false }
+);
+
 const CronJobSchema = new mongoose.Schema({
   topic: { type: String, required: true },
+  curriculumData: { type: CurriculumDataSchema, default: undefined },
   language: { type: String, default: "en-IN" },
   mode: { type: String, enum: ["generic", "detailed"], default: "generic" },
   schedule: { type: String, required: true }, // cron expression: "0 9 * * *" or "interval"

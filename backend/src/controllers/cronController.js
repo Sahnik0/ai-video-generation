@@ -9,6 +9,17 @@ const { scheduleJob, scheduleIntervalJob, cancelJob, isValidCronExpression, calc
 
 const YOUTUBE_UPLOAD_LOCKED = true;
 
+const getResolvedTopic = (topic, curriculumData) => {
+  const candidate = (
+    topic ||
+    curriculumData?.subtopicName ||
+    curriculumData?.topicName ||
+    curriculumData?.chapterName ||
+    ""
+  );
+  return String(candidate || "").trim();
+};
+
 /**
  * GET /api/cron - List all cron jobs
  */
@@ -40,7 +51,7 @@ const getCronJob = async (req, res) => {
 
 /**
  * POST /api/cron - Create a new cron job
- * Body: { topic, language, mode, schedule, isActive, intervalMode, intervalMinutes }
+ * Body: { topic, language, mode, schedule, isActive, intervalMode, intervalMinutes, curriculumData }
  */
 const createCronJob = async (req, res) => {
   try {
@@ -52,11 +63,14 @@ const createCronJob = async (req, res) => {
       isActive = true,
       intervalMode = false,
       intervalMinutes = 30,
-      uploadTarget = "s3"
+      uploadTarget = "s3",
+      curriculumData
     } = req.body;
+
+    const resolvedTopic = getResolvedTopic(topic, curriculumData);
     
-    if (!topic) {
-      return res.status(400).json({ error: "Topic is required" });
+    if (!resolvedTopic) {
+      return res.status(400).json({ error: "Topic is required (or provide curriculumData with topic/subtopic name)" });
     }
     
     if (!["s3", "youtube"].includes(uploadTarget)) {
@@ -89,9 +103,10 @@ const createCronJob = async (req, res) => {
     }
     
     const job = await CronJob.create({
-      topic,
+      topic: resolvedTopic,
       language,
       mode,
+      curriculumData,
       schedule: intervalMode ? "interval" : schedule,
       isActive,
       intervalMode,
@@ -111,7 +126,7 @@ const createCronJob = async (req, res) => {
       }
     }
     
-    console.log(`[cron-api] created ${intervalMode ? 'interval' : 'cron'} job ${job._id} for topic: ${topic}`);
+    console.log(`[cron-api] created ${intervalMode ? 'interval' : 'cron'} job ${job._id} for topic: ${resolvedTopic}`);
     res.status(201).json({ success: true, job });
   } catch (error) {
     console.error("[cron-api] create failed:", error.message);
@@ -129,7 +144,7 @@ const updateCronJob = async (req, res) => {
       return res.status(404).json({ error: "Cron job not found" });
     }
     
-    const { topic, language, mode, schedule, isActive, uploadTarget } = req.body;
+    const { topic, language, mode, schedule, isActive, uploadTarget, curriculumData } = req.body;
     
     // Validate schedule if provided
     if (schedule && !isValidCronExpression(schedule)) {
@@ -137,9 +152,16 @@ const updateCronJob = async (req, res) => {
     }
     
     // Update fields
-    if (topic !== undefined) job.topic = topic;
+    if (topic !== undefined || curriculumData !== undefined) {
+      const resolvedTopic = getResolvedTopic(topic !== undefined ? topic : job.topic, curriculumData !== undefined ? curriculumData : job.curriculumData);
+      if (!resolvedTopic) {
+        return res.status(400).json({ error: "Topic is required (or provide curriculumData with topic/subtopic name)" });
+      }
+      job.topic = resolvedTopic;
+    }
     if (language !== undefined) job.language = language;
     if (mode !== undefined) job.mode = mode;
+    if (curriculumData !== undefined) job.curriculumData = curriculumData;
     if (uploadTarget !== undefined) {
       if (!["s3", "youtube"].includes(uploadTarget)) {
         return res.status(400).json({ error: "Invalid upload target" });

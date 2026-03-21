@@ -24,15 +24,45 @@ const { uploadToS3 } = require("../services/s3Service");
 const tempDir = path.resolve(__dirname, "../../tmp");
 const MAX_VIDEO_SECONDS = 300; // 5-minute cap
 
+const getResolvedTopic = (topic, curriculumData) => {
+  return normalizeTopic(
+    topic ||
+    curriculumData?.subtopicName ||
+    curriculumData?.topicName ||
+    curriculumData?.chapterName ||
+    ""
+  );
+};
+
+const getCurriculumFingerprint = (curriculumData) => {
+  if (!curriculumData) return "";
+  return [
+    curriculumData.curriculumId,
+    curriculumData.gradeId,
+    curriculumData.subjectId,
+    curriculumData.chapterId,
+    curriculumData.topicId,
+    curriculumData.subtopicId,
+    curriculumData.conceptId,
+  ]
+    .filter(Boolean)
+    .join("::");
+};
+
 /**
  * Generate detailed video for cron job (no HTTP response)
  */
-const generateDetailedVideoForCron = async (topic, language = "en-IN", uploadTarget = "s3") => {
+const generateDetailedVideoForCron = async (topic, language = "en-IN", uploadTarget = "s3", options = {}) => {
   let jobTempDir = null;
   let outputPath = null;
   try {
-    const normalized = normalizeTopic(topic);
-    const topicHash = hashTopic(`detailed::${normalized}::${language}`);
+    const curriculumData = options.curriculumData;
+    const normalized = getResolvedTopic(topic, curriculumData);
+    if (!normalized) {
+      throw new Error("Topic is required for generation");
+    }
+    const curriculumFingerprint = getCurriculumFingerprint(curriculumData);
+    const topicHash = hashTopic(`detailed::${normalized}::${language}::${curriculumFingerprint || "none"}`);
     console.log(`[detailed-cron] start topicHash=${topicHash} language=${language}`);
 
     // Check cache
@@ -51,12 +81,16 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN", uploadTar
       };
     }
 
-    const rawScript = await generateScript(topic, language);
+    const rawScript = await generateScript(normalized, language, {
+      mode: "detailed",
+      uploadTarget,
+      curriculumData,
+    });
     const baseSections = trimSectionsToWordLimit(rawScript.sections, 300);
-    const title = rawScript.title || topic;
+    const title = rawScript.title || normalized;
     const greeting = {
       heading: "Welcome",
-      script: `Hi there! I'm excited to learn with you. Let’s explore ${topic} together.`,
+      script: `Hi there! I'm excited to learn with you. Let’s explore ${normalized} together.`,
       keywords: ["greeting", "welcome"]
     };
     const sections = [greeting, ...baseSections];
@@ -93,7 +127,11 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN", uploadTar
     const finalAudioFiles = audioFiles.slice(0, activeSections);
     const finalDurations = audioDurations.slice(0, activeSections);
 
-    const sceneDataArray = await generateScenesCode(finalSections, finalDurations, normalized);
+    const sceneDataArray = await generateScenesCode(finalSections, finalDurations, normalized, {
+      language,
+      mode: "detailed",
+      curriculumData,
+    });
     const outputFileName = `detailed_${topicHash}_${Date.now()}.mp4`;
     outputPath = path.join(jobTempDir, outputFileName);
 
@@ -110,8 +148,8 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN", uploadTar
     let s3Result = null;
     if (uploadTarget === "youtube") {
       youtubeResult = await uploadToYouTube(outputPath, {
-        title: title || topic,
-        description: `Detailed animated video about: ${topic}\n\nLanguage: ${language}`,
+        title: title || normalized,
+        description: `Detailed animated video about: ${normalized}\n\nLanguage: ${language}`,
         tags: finalSections.flatMap(s => s.keywords || []).slice(0, 10),
         categoryId: "27",
         privacyStatus: "unlisted"
@@ -119,8 +157,8 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN", uploadTar
       videoUrl = youtubeResult.videoUrl;
     } else {
       s3Result = await uploadToS3(outputPath, {
-        title: title || topic,
-        topic,
+        title: title || normalized,
+        topic: normalized,
         language
       });
       videoUrl = s3Result.videoUrl;
@@ -133,6 +171,7 @@ const generateDetailedVideoForCron = async (topic, language = "en-IN", uploadTar
         topicHash,
         title,
         topic: normalized,
+        curriculumData,
         youtubeVideoId: youtubeResult ? youtubeResult.videoId : undefined,
         youtubeUrl: youtubeResult ? youtubeResult.videoUrl : undefined,
         youtubeUploadedAt: youtubeResult ? new Date() : undefined,

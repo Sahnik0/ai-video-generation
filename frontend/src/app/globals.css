@@ -5,38 +5,38 @@
 @layer base {
   :root {
     --background: 255 255 255;
-    --foreground: 15 23 42;
+    --foreground: 17 24 39;
     --card: 255 255 255;
-    --card-foreground: 15 23 42;
-    --primary: 99 102 241;
+    --card-foreground: 17 24 39;
+    --primary: 31 41 55;
     --primary-foreground: 255 255 255;
-    --secondary: 241 245 249;
-    --secondary-foreground: 15 23 42;
-    --muted: 241 245 249;
-    --muted-foreground: 100 116 139;
-    --accent: 241 245 249;
-    --accent-foreground: 15 23 42;
-    --border: 226 232 240;
-    --input: 226 232 240;
-    --ring: 99 102 241;
+    --secondary: 243 244 246;
+    --secondary-foreground: 31 41 55;
+    --muted: 243 244 246;
+    --muted-foreground: 107 114 128;
+    --accent: 229 231 235;
+    --accent-foreground: 31 41 55;
+    --border: 229 231 235;
+    --input: 209 213 219;
+    --ring: 31 41 55;
   }
 
   .dark {
-    --background: 15 23 42;
-    --foreground: 241 245 249;
-    --card: 30 41 59;
-    --card-foreground: 241 245 249;
-    --primary: 99 102 241;
+    --background: 255 255 255;
+    --foreground: 17 24 39;
+    --card: 255 255 255;
+    --card-foreground: 17 24 39;
+    --primary: 31 41 55;
     --primary-foreground: 255 255 255;
-    --secondary: 51 65 85;
-    --secondary-foreground: 241 245 249;
-    --muted: 51 65 85;
-    --muted-foreground: 148 163 184;
-    --accent: 51 65 85;
-    --accent-foreground: 241 245 249;
-    --border: 51 65 85;
-    --input: 51 65 85;
-    --ring: 99 102 241;
+    --secondary: 243 244 246;
+    --secondary-foreground: 31 41 55;
+    --muted: 243 244 246;
+    --muted-foreground: 107 114 128;
+    --accent: 229 231 235;
+    --accent-foreground: 31 41 55;
+    --border: 229 231 235;
+    --input: 209 213 219;
+    --ring: 31 41 55;
   }
 }
 
@@ -57,7 +57,13 @@
     color: rgb(var(--card-foreground));
     border-radius: 0.75rem;
     border: 1px solid rgb(var(--border));
-    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    box-shadow: 0 10px 30px -20px rgb(17 24 39 / 0.2);
+    transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+  }
+
+  .card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 34px -20px rgb(17 24 39 / 0.28);
   }
   
   .btn {
@@ -86,7 +92,7 @@
   .btn-primary {
     background-color: rgb(var(--primary));
     color: rgb(var(--primary-foreground));
-    box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    box-shadow: 0 12px 22px -16px rgb(17 24 39 / 0.65);
   }
   
   .btn-primary:hover:not(:disabled) {
@@ -99,7 +105,7 @@
   }
   
   .btn-secondary:hover:not(:disabled) {
-    background-color: rgb(var(--secondary) / 0.8);
+    background-color: rgb(var(--accent));
   }
   
   .btn-ghost:hover {
@@ -149,8 +155,9 @@
   }
   
   .badge-primary {
-    background-color: rgb(var(--primary) / 0.1);
-    color: rgb(var(--primary));
+    background-color: rgb(var(--secondary));
+    color: rgb(var(--secondary-foreground));
+    border: 1px solid rgb(var(--border));
   }
   
   .badge-success {
@@ -171,5 +178,64 @@
   .dark .badge-warning {
     background-color: rgb(251 191 36 / 0.3);
     color: rgb(251 191 36 / 1);
+  }
+
+  .panel {
+    border: 1px solid rgb(var(--border));
+    border-radius: 0.75rem;
+    background: rgb(var(--card));
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 420ms ease both;
+  }
+
+  .animate-fade-up {
+    animation: fadeUp 460ms ease both;
+  }
+
+  .animate-soft-pop {
+    animation: softPop 220ms ease both;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes softPop {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
   }
 }

@@ -4,6 +4,7 @@ const helmet = require("helmet");
 const videosRouter = require("./routes/videos");
 const cronRouter = require("./routes/cron");
 const youtubeRouter = require("./routes/youtube");
+const youtubeVideoRouter = require("./routes/youtubeVideo");
 
 const app = express();
 
@@ -27,5 +28,6 @@ app.get("/ping", (req, res) => {
 app.use("/api/videos", videosRouter);
 app.use("/api/cron", cronRouter);
 app.use("/api/youtube", youtubeRouter);
+app.use("/api/youtube-video", youtubeVideoRouter);
 
 module.exports = { app };

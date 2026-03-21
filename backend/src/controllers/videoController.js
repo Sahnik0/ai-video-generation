@@ -13,6 +13,31 @@ const { uploadToS3 } = require("../services/s3Service");
 
 const tempDir = path.resolve(__dirname, "../../tmp");
 
+const getResolvedTopic = (topic, curriculumData) => {
+  return normalizeTopic(
+    topic ||
+    curriculumData?.subtopicName ||
+    curriculumData?.topicName ||
+    curriculumData?.chapterName ||
+    ""
+  );
+};
+
+const getCurriculumFingerprint = (curriculumData) => {
+  if (!curriculumData) return "";
+  return [
+    curriculumData.curriculumId,
+    curriculumData.gradeId,
+    curriculumData.subjectId,
+    curriculumData.chapterId,
+    curriculumData.topicId,
+    curriculumData.subtopicId,
+    curriculumData.conceptId,
+  ]
+    .filter(Boolean)
+    .join("::");
+};
+
 const listVideos = async (req, res) => {
   const videos = await Video.find({ status: "completed" }).sort({ createdAt: -1 }).limit(20);
   const items = videos.map((video) => ({
@@ -31,13 +56,18 @@ const listVideos = async (req, res) => {
 /**
  * Generate video for cron job (no HTTP response)
  */
-const generateVideoForCron = async (topic, language = "en-IN", uploadTarget = "s3") => {
+const generateVideoForCron = async (topic, language = "en-IN", uploadTarget = "s3", options = {}) => {
   let jobTempDir = null;
   let audioPath = null;
   let videoPath = null;
   try {
-    const normalized = normalizeTopic(topic);
-    const topicHash = hashTopic(`${normalized}::${language}`);
+    const curriculumData = options.curriculumData;
+    const normalized = getResolvedTopic(topic, curriculumData);
+    if (!normalized) {
+      throw new Error("Topic is required for generation");
+    }
+    const curriculumFingerprint = getCurriculumFingerprint(curriculumData);
+    const topicHash = hashTopic(`${normalized}::${language}::${curriculumFingerprint || "none"}`);
     console.log(`[video-cron] start topicHash=${topicHash} language=${language}`);
 
     // Check cache
@@ -59,15 +89,20 @@ const generateVideoForCron = async (topic, language = "en-IN", uploadTarget = "s
     const record = await Video.create({
       topic: normalized,
       topicHash,
+      curriculumData,
       status: "generating",
       language,
       uploadTarget,
       createdAt: new Date()
     });
 
-    const aiResponse = await generateScript(topic, language);
+    const aiResponse = await generateScript(normalized, language, {
+      mode: "generic",
+      uploadTarget,
+      curriculumData,
+    });
     const baseSections = trimSectionsToWordLimit(aiResponse.sections, 300);
-    const greeting = `Hi there! I'm excited to learn with you. Let’s explore ${topic} together.`;
+    const greeting = `Hi there! I'm excited to learn with you. Let’s explore ${normalized} together.`;
     const sections = [
       { heading: "Welcome", script: greeting, keywords: ["greeting", "welcome"] },
       ...baseSections
@@ -110,8 +145,8 @@ const generateVideoForCron = async (topic, language = "en-IN", uploadTarget = "s
     let s3Result = null;
     if (uploadTarget === "youtube") {
       youtubeResult = await uploadToYouTube(videoPath, {
-        title: aiResponse.title || topic,
-        description: `Auto-generated video about: ${topic}\n\nLanguage: ${language}`,
+        title: aiResponse.title || normalized,
+        description: `Auto-generated video about: ${normalized}\n\nLanguage: ${language}`,
         tags: sections.flatMap(s => s.keywords).slice(0, 10),
         categoryId: "27",
         privacyStatus: "unlisted"
@@ -119,8 +154,8 @@ const generateVideoForCron = async (topic, language = "en-IN", uploadTarget = "s
       videoUrl = youtubeResult.videoUrl;
     } else {
       s3Result = await uploadToS3(videoPath, {
-        title: aiResponse.title || topic,
-        topic,
+        title: aiResponse.title || normalized,
+        topic: normalized,
         language
       });
       videoUrl = s3Result.videoUrl;
@@ -130,6 +165,7 @@ const generateVideoForCron = async (topic, language = "en-IN", uploadTarget = "s
     record.title = aiResponse.title;
     record.script = tweakedSections.map((s) => s.script).join(" ");
     record.sections = sections;
+    record.curriculumData = curriculumData;
     record.youtubeVideoId = youtubeResult ? youtubeResult.videoId : undefined;
     record.youtubeUrl = youtubeResult ? youtubeResult.videoUrl : undefined;
     record.youtubeUploadedAt = youtubeResult ? new Date() : undefined;

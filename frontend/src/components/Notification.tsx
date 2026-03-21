@@ -24,21 +24,21 @@ export function Notification({ message, type, onClose }: NotificationProps) {
   const getTypeStyles = () => {
     switch (type) {
       case "success":
-        return "bg-green-100 border-green-500 text-green-700 dark:bg-green-900 dark:border-green-700 dark:text-green-100";
+        return "bg-emerald-50/95 border-emerald-300 text-emerald-800 dark:bg-emerald-950/80 dark:border-emerald-800 dark:text-emerald-200";
       case "error":
-        return "bg-red-100 border-red-500 text-red-700 dark:bg-red-900 dark:border-red-700 dark:text-red-100";
+        return "bg-red-50/95 border-red-300 text-red-800 dark:bg-red-950/80 dark:border-red-800 dark:text-red-200";
       case "warning":
-        return "bg-yellow-100 border-yellow-500 text-yellow-700 dark:bg-yellow-900 dark:border-yellow-700 dark:text-yellow-100";
+        return "bg-amber-50/95 border-amber-300 text-amber-800 dark:bg-amber-950/80 dark:border-amber-800 dark:text-amber-200";
       case "info":
         default:
-        return "bg-blue-100 border-blue-500 text-blue-700 dark:bg-blue-900 dark:border-blue-700 dark:text-blue-100";
+        return "bg-slate-100/95 border-slate-300 text-slate-800 dark:bg-slate-900/95 dark:border-slate-700 dark:text-slate-200";
     }
   };
 
   return (
     <div
-      className={`fixed top-4 right-4 z-50 rounded-lg shadow-lg ${getTypeStyles()} border transition-all duration-300 ${
-        isVisible ? "translate-x-0 opacity-100" : "translate-x-full opacity-0"
+      className={`w-[320px] rounded-xl border shadow-lg backdrop-blur-md ${getTypeStyles()} transition-all duration-300 ${
+        isVisible ? "translate-x-0 opacity-100" : "translate-x-4 opacity-0"
       }`}
     >
       <div className="flex items-start p-4">
@@ -69,7 +69,7 @@ export function Notification({ message, type, onClose }: NotificationProps) {
         </div>
         <button
           onClick={onClose}
-          className="ml-4 flex-shrink-0 text-muted-foreground hover:text-foreground focus:outline-none"
+          className="ml-4 flex-shrink-0 text-muted-foreground hover:text-foreground focus:outline-none transition-colors"
         >
           <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
             <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />

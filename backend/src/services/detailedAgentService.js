@@ -1,10 +1,3 @@
-/**
- * detailedAgentService.js
- *
- * AI agent that generates Remotion JSX animation code for each video section.
- * Uses Gemini 2.5 Pro to write complete, self-contained React components that
- * visually match the narration with precision.
- */
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { env } = require("../config/env");
@@ -1026,7 +1019,29 @@ export default Scene;
  * @param {number} totalSections
  * @param {object} analysis  - result from analyzeSceneWithAI()
  */
-function buildPrompt(sectionText, sectionIndex, durationInFrames, totalSections, analysis, iconPromptSection = '') {
+function buildCurriculumContextBlock(generationContext = {}) {
+  const curriculumData = generationContext.curriculumData || {};
+  const pairs = [
+    ["Curriculum", curriculumData.curriculumName],
+    ["Grade", curriculumData.gradeName],
+    ["Subject", curriculumData.subjectName],
+    ["Chapter", curriculumData.chapterName],
+    ["Topic", curriculumData.topicName],
+    ["Subtopic", curriculumData.subtopicName],
+    ["Concept", curriculumData.conceptName],
+  ].filter(([, value]) => value);
+
+  if (!pairs.length) return "";
+
+  return [
+    "ACADEMIC CONTEXT (MANDATORY FOR VISUAL CHOICES):",
+    ...pairs.map(([label, value]) => `- ${label}: ${value}`),
+    "- Keep visuals and captions tightly scoped to this context; do not drift to adjacent topics.",
+    "",
+  ].join("\n");
+}
+
+function buildPrompt(sectionText, sectionIndex, durationInFrames, totalSections, analysis, iconPromptSection = '', generationContext = {}) {
   const durationSec = (durationInFrames / FPS).toFixed(1);
   const phaseFrames = Math.floor(durationInFrames / 3);
   const halfFrames  = Math.floor(durationInFrames / 2);
@@ -1044,6 +1059,7 @@ function buildPrompt(sectionText, sectionIndex, durationInFrames, totalSections,
   const titleText     = analysis.titleText     || sectionText.slice(0, 40);
   const textContent   = analysis.textContent   || '';
   const titleText_js  = titleText.replace(/`/g, "'").replace(/\\/g, '\\\\');
+  const curriculumContext = buildCurriculumContextBlock(generationContext);
 
   // Text alignment rules → CSS and flexbox alignment values
   const cssTextAlign  = textAlignment === 'left'  ? 'left'  : 'center';
@@ -1069,6 +1085,9 @@ Every frame must look like a premium tech-documentary or explainer video.
 NARRATION — Section ${sectionIndex + 1} of ${totalSections}
 ══════════════════════════════════════════════════
 "${sectionText}"
+
+${curriculumContext}Mode         : ${(generationContext.mode || 'detailed').toUpperCase()}
+Language     : ${generationContext.language || 'en-IN'}
 
 Scene title  : "${titleText_js}"
 Duration     : ${durationInFrames} frames at ${FPS}fps = ${durationSec}s
@@ -1397,7 +1416,7 @@ First line of response must be: import React from 'react';
  * @param {string}   videoTopic     - overall topic (passed to AI scene director)
  * @returns {Array} [{sectionIndex, code, durationInFrames}]
  */
-async function generateScenesCode(sections, audioDurations, videoTopic = '') {
+async function generateScenesCode(sections, audioDurations, videoTopic = '', generationContext = {}) {
   console.log(`[detailedAgent] generating ${sections.length} scenes in parallel...`);
 
   /**
@@ -1411,7 +1430,16 @@ async function generateScenesCode(sections, audioDurations, videoTopic = '') {
     console.log(`[detailedAgent] scene ${i + 1}/${sections.length} starting | dur=${durationInFrames}f (${(durationInFrames / FPS).toFixed(1)}s)`);
 
     // Ask the AI Scene Director to analyse this narration before code generation
-    const analysis = await analyzeSceneWithAI(section.script, i, sections.length, videoTopic);
+    const analysisTopic = [
+      videoTopic,
+      generationContext.curriculumData?.subjectName,
+      generationContext.curriculumData?.chapterName,
+      generationContext.curriculumData?.topicName,
+      generationContext.curriculumData?.subtopicName,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+    const analysis = await analyzeSceneWithAI(section.script, i, sections.length, analysisTopic);
     console.log(`[detailedAgent] scene ${i + 1} analysis: type=${analysis.type} align=${analysis.textAlignment} style=${analysis.animationStyle}`);
 
     // Fetch contextual SVG icons from Iconify based on AI-requested icons
@@ -1419,7 +1447,7 @@ async function generateScenesCode(sections, audioDurations, videoTopic = '') {
     const svgIcons = await fetchSvgIcons(iconRequests);
 
     const iconPromptSection = formatIconsForPrompt(svgIcons);
-    const prompt = buildPrompt(section.script, i, durationInFrames, sections.length, analysis, iconPromptSection);
+    const prompt = buildPrompt(section.script, i, durationInFrames, sections.length, analysis, iconPromptSection, generationContext);
     let code = null;
 
     for (let attempt = 0; attempt < 3; attempt++) {

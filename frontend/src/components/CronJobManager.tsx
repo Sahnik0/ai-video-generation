@@ -199,7 +199,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
   };
 
   return (
-    <div className="card p-6 space-y-6">
+    <div className="card p-6 space-y-6 animate-fade-up">
       <div className="flex justify-between items-center">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Scheduled Jobs</h2>
@@ -214,7 +214,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
       </div>
 
       {showCreateForm && (
-        <div className="p-4 space-y-4 rounded-lg bg-slate-50 dark:bg-slate-800/30 border border-border">
+        <div className="p-4 space-y-4 rounded-lg bg-secondary/70 border border-border animate-fade-up">
           <input
             type="text"
             className="input"
@@ -269,7 +269,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                 className="px-4 py-2.5 rounded-lg text-sm font-medium bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-400 cursor-not-allowed"
                 title="YouTube upload is locked for now"
               >
-                YouTube (Locked)
+                YouTube 
               </button>
             </div>
             <p className="text-xs text-muted-foreground mt-2">
@@ -292,7 +292,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                     : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
                 }`}
               >
-                ⏱️ Interval Mode
+                Interval
               </button>
               <button
                 type="button"
@@ -303,7 +303,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                     : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
                 }`}
               >
-                📅 Cron Schedule
+                Cron Expression
               </button>
             </div>
           </div>
@@ -325,7 +325,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
                 <option value={360}>Every 6 hours</option>
               </select>
               <p className="text-xs text-muted-foreground mt-2">
-                {`⚡ First video uploads immediately, then repeats every ${intervalMinutes} minutes`}
+                {`First video uploads immediately, then repeats every ${intervalMinutes} minutes`}
               </p>
             </div>
           ) : (
@@ -371,7 +371,7 @@ export function CronJobManager({ apiBase, addNotification }: CronJobManagerProps
           jobs.map((job) => (
             <div
               key={job._id}
-              className={`card p-4 ${!job.isActive ? "opacity-60" : ""}`}
+              className={`panel p-4 transition-all duration-200 hover:-translate-y-0.5 ${!job.isActive ? "opacity-60" : ""}`}
             >
               <div className="flex justify-between items-start gap-4">
                 <div className="flex-1 min-w-0">
