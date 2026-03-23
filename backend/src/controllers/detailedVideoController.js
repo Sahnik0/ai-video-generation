@@ -25,13 +25,18 @@ const tempDir = path.resolve(__dirname, "../../tmp");
 const MAX_VIDEO_SECONDS = 300; // 5-minute cap
 
 const getResolvedTopic = (topic, curriculumData) => {
-  return normalizeTopic(
-    topic ||
-    curriculumData?.subtopicName ||
-    curriculumData?.topicName ||
-    curriculumData?.chapterName ||
-    ""
-  );
+  const curriculumTopic = [
+    curriculumData?.curriculumName,
+    curriculumData?.gradeName,
+    curriculumData?.subjectName,
+    curriculumData?.chapterName,
+    curriculumData?.topicName,
+    curriculumData?.subtopicName,
+    curriculumData?.conceptName,
+  ]
+    .filter((part) => typeof part === "string" && part.trim())
+    .join(" > ");
+  return normalizeTopic(topic || curriculumTopic || "");
 };
 
 const getCurriculumFingerprint = (curriculumData) => {

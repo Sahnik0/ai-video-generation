@@ -25,7 +25,7 @@ const LANGUAGE_NAMES = {
 const buildCurriculumBlock = (curriculumData = {}) => {
   if (!curriculumData || typeof curriculumData !== "object") return "";
 
-  const pairs = [
+  const namePairs = [
     ["curriculum", curriculumData.curriculumName],
     ["grade", curriculumData.gradeName],
     ["subject", curriculumData.subjectName],
@@ -35,9 +35,22 @@ const buildCurriculumBlock = (curriculumData = {}) => {
     ["concept", curriculumData.conceptName],
   ].filter(([, value]) => value);
 
-  if (!pairs.length) return "";
+  const idPairs = [
+    ["curriculumId", curriculumData.curriculumId],
+    ["gradeId", curriculumData.gradeId],
+    ["subjectId", curriculumData.subjectId],
+    ["chapterId", curriculumData.chapterId],
+    ["topicId", curriculumData.topicId],
+    ["subtopicId", curriculumData.subtopicId],
+    ["conceptId", curriculumData.conceptId],
+  ].filter(([, value]) => value);
 
-  const lines = pairs.map(([key, value]) => `- ${key}: ${value}`);
+  if (!namePairs.length && !idPairs.length) return "";
+
+  const lines = [
+    ...namePairs.map(([key, value]) => `- ${key}: ${value}`),
+    ...idPairs.map(([key, value]) => `- ${key}: ${value}`),
+  ];
   return ["Curriculum context (must be reflected in output):", ...lines, ""].join("\n");
 };
 

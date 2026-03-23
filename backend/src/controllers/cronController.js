@@ -10,13 +10,18 @@ const { scheduleJob, scheduleIntervalJob, cancelJob, isValidCronExpression, calc
 const YOUTUBE_UPLOAD_LOCKED = true;
 
 const getResolvedTopic = (topic, curriculumData) => {
-  const candidate = (
-    topic ||
-    curriculumData?.subtopicName ||
-    curriculumData?.topicName ||
-    curriculumData?.chapterName ||
-    ""
-  );
+  const curriculumTopic = [
+    curriculumData?.curriculumName,
+    curriculumData?.gradeName,
+    curriculumData?.subjectName,
+    curriculumData?.chapterName,
+    curriculumData?.topicName,
+    curriculumData?.subtopicName,
+    curriculumData?.conceptName,
+  ]
+    .filter((part) => typeof part === "string" && part.trim())
+    .join(" > ");
+  const candidate = topic || curriculumTopic || "";
   return String(candidate || "").trim();
 };
 
@@ -70,7 +75,7 @@ const createCronJob = async (req, res) => {
     const resolvedTopic = getResolvedTopic(topic, curriculumData);
     
     if (!resolvedTopic) {
-      return res.status(400).json({ error: "Topic is required (or provide curriculumData with topic/subtopic name)" });
+      return res.status(400).json({ error: "Topic is required (or provide curriculumData names to derive it)" });
     }
     
     if (!["s3", "youtube"].includes(uploadTarget)) {
@@ -155,7 +160,7 @@ const updateCronJob = async (req, res) => {
     if (topic !== undefined || curriculumData !== undefined) {
       const resolvedTopic = getResolvedTopic(topic !== undefined ? topic : job.topic, curriculumData !== undefined ? curriculumData : job.curriculumData);
       if (!resolvedTopic) {
-        return res.status(400).json({ error: "Topic is required (or provide curriculumData with topic/subtopic name)" });
+        return res.status(400).json({ error: "Topic is required (or provide curriculumData names to derive it)" });
       }
       job.topic = resolvedTopic;
     }

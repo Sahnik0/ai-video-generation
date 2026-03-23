@@ -1021,7 +1021,7 @@ export default Scene;
  */
 function buildCurriculumContextBlock(generationContext = {}) {
   const curriculumData = generationContext.curriculumData || {};
-  const pairs = [
+  const namePairs = [
     ["Curriculum", curriculumData.curriculumName],
     ["Grade", curriculumData.gradeName],
     ["Subject", curriculumData.subjectName],
@@ -1031,11 +1031,22 @@ function buildCurriculumContextBlock(generationContext = {}) {
     ["Concept", curriculumData.conceptName],
   ].filter(([, value]) => value);
 
-  if (!pairs.length) return "";
+  const idPairs = [
+    ["CurriculumId", curriculumData.curriculumId],
+    ["GradeId", curriculumData.gradeId],
+    ["SubjectId", curriculumData.subjectId],
+    ["ChapterId", curriculumData.chapterId],
+    ["TopicId", curriculumData.topicId],
+    ["SubtopicId", curriculumData.subtopicId],
+    ["ConceptId", curriculumData.conceptId],
+  ].filter(([, value]) => value);
+
+  if (!namePairs.length && !idPairs.length) return "";
 
   return [
     "ACADEMIC CONTEXT (MANDATORY FOR VISUAL CHOICES):",
-    ...pairs.map(([label, value]) => `- ${label}: ${value}`),
+    ...namePairs.map(([label, value]) => `- ${label}: ${value}`),
+    ...idPairs.map(([label, value]) => `- ${label}: ${value}`),
     "- Keep visuals and captions tightly scoped to this context; do not drift to adjacent topics.",
     "",
   ].join("\n");
